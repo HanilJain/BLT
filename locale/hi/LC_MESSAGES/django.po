@@ -93,9 +93,9 @@ msgstr "वे ईमेल जो डोमेन जोड़ने की अ
 
 #: company/templates/company/register_company.html:182
 #, fuzzy
-#| msgid "Email should be registered user on bugheist"
-msgid "Email should be registerd user on bugheist"
-msgstr "ईमेल bugheist पर पंजीकृत उपयोगकर्ता होना चाहिए"
+#| msgid "Email should be registered user on BLT"
+msgid "Email should be registerd user on BLT"
+msgstr "ईमेल BLT पर पंजीकृत उपयोगकर्ता होना चाहिए"
 
 #: company/templates/company/register_company.html:186
 #: website/templates/report.html:286
@@ -197,9 +197,9 @@ msgstr "हाँ"
 #: website/templates/account/password_change.html:67
 #: website/templates/account/password_reset_from_key.html:41
 #: website/templates/account/password_reset_from_key.html:67
-#: website/templates/base_admin.html:109
-#: website/templates/base_dashboard_company.html:134
-#: website/templates/base_dashboard_user.html:116
+#: website/templates/base_dashboard.html:109
+#: website/templates/base_dashboard.html:134
+#: website/templates/base_dashboard.html:116
 #: website/templates/includes/navbar.html:125
 msgid "Change Password"
 msgstr "पासवर्ड बदलें"
@@ -247,16 +247,16 @@ msgstr "खाता साइन अप"
 msgid "Sign Up"
 msgstr "साइन अप करें"
 
-#: website/templates/base_admin.html:107
-#: website/templates/base_dashboard_company.html:132
-#: website/templates/base_dashboard_user.html:114
+#: website/templates/base_dashboard.html:107
+#: website/templates/base_dashboard.html:132
+#: website/templates/base_dashboard.html:114
 #: website/templates/includes/navbar.html:102
 msgid "User Profile"
 msgstr "उपयोगकर्ता प्रोफ़ाइल"
 
-#: website/templates/base_admin.html:111
-#: website/templates/base_dashboard_company.html:136
-#: website/templates/base_dashboard_user.html:118
+#: website/templates/base_dashboard.html:111
+#: website/templates/base_dashboard.html:136
+#: website/templates/base_dashboard.html:118
 #: website/templates/includes/navbar.html:36
 #: website/templates/includes/navbar.html:141
 msgid "Logout"
@@ -745,7 +745,7 @@ msgid "Submit the information"
 msgstr "जानकारी सबमिट करें"
 
 #: website/templates/mobile_about.html:34
-msgid "Win money through company-sponsored Bug Hunts"
+msgid "Win money through company-sponsored Bug Bounties"
 msgstr "कंपनी के प्रायोजित बग हंट के माध्यम से पैसे जीतें"
 
 #: website/templates/mobile_about.html:34
@@ -765,7 +765,7 @@ msgid "If you participate in"
 msgstr "यदि आप भाग लेते हैं"
 
 #: website/templates/mobile_about.html:36
-msgid "sponsored Bug Hunts"
+msgid "sponsored Bug Bounties"
 msgstr "प्रायोजित बग हंट"
 
 #: website/templates/mobile_about.html:36
@@ -790,7 +790,7 @@ msgstr ""
 
 #: website/templates/mobile_about.html:43
 msgid ""
-"offers monthly Bug Hunts through 4 different subscription plans to help you "
+"offers monthly Bug Bounties through 4 different subscription plans to help you "
 "achieve this"
 msgstr ""
 "इसे प्राप्त करने में आपकी मदद करने के लिए 4 विभिन्न सदस्यता योजनाओं के माध्यम से मासिक बग "

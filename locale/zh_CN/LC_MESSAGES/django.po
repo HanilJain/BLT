@@ -92,9 +92,9 @@ msgstr "添加允许添加域的电子邮件"
 
 #: company/templates/company/register_company.html:182
 #, fuzzy
-#| msgid "Email should be registered user on bugheist"
-msgid "Email should be registerd user on bugheist"
-msgstr "电子邮件应为bugheist上注册的用户"
+#| msgid "Email should be registered user on BLT"
+msgid "Email should be registerd user on BLT"
+msgstr "电子邮件应为BLT上注册的用户"
 
 #: company/templates/company/register_company.html:186
 #: website/templates/report.html:286
@@ -198,9 +198,9 @@ msgstr "是的"
 #: website/templates/account/password_change.html:67
 #: website/templates/account/password_reset_from_key.html:41
 #: website/templates/account/password_reset_from_key.html:67
-#: website/templates/base_admin.html:109
-#: website/templates/base_dashboard_company.html:134
-#: website/templates/base_dashboard_user.html:116
+#: website/templates/base_dashboard.html:109
+#: website/templates/base_dashboard.html:134
+#: website/templates/base_dashboard.html:116
 #: website/templates/includes/navbar.html:125
 msgid "Change Password"
 msgstr "更改密码"
@@ -248,16 +248,16 @@ msgstr "注册帐号"
 msgid "Sign Up"
 msgstr "注册"
 
-#: website/templates/base_admin.html:107
-#: website/templates/base_dashboard_company.html:132
-#: website/templates/base_dashboard_user.html:114
+#: website/templates/base_dashboard.html:107
+#: website/templates/base_dashboard.html:132
+#: website/templates/base_dashboard.html:114
 #: website/templates/includes/navbar.html:102
 msgid "User Profile"
 msgstr "用户资料"
 
-#: website/templates/base_admin.html:111
-#: website/templates/base_dashboard_company.html:136
-#: website/templates/base_dashboard_user.html:118
+#: website/templates/base_dashboard.html:111
+#: website/templates/base_dashboard.html:136
+#: website/templates/base_dashboard.html:118
 #: website/templates/includes/navbar.html:36
 #: website/templates/includes/navbar.html:141
 msgid "Logout"
@@ -740,7 +740,7 @@ msgid "Submit the information"
 msgstr "提交信息"
 
 #: website/templates/mobile_about.html:34
-msgid "Win money through company-sponsored Bug Hunts"
+msgid "Win money through company-sponsored Bug Bounties"
 msgstr "通过由公司赞助的漏洞狩猎赢得奖金"
 
 #: website/templates/mobile_about.html:34
@@ -758,7 +758,7 @@ msgid "If you participate in"
 msgstr "如果你参与"
 
 #: website/templates/mobile_about.html:36
-msgid "sponsored Bug Hunts"
+msgid "sponsored Bug Bounties"
 msgstr "由公司赞助的漏洞狩猎"
 
 #: website/templates/mobile_about.html:36
@@ -781,7 +781,7 @@ msgstr "通过为客户提供一致的无bug用户体验，你想让他们保持
 
 #: website/templates/mobile_about.html:43
 msgid ""
-"offers monthly Bug Hunts through 4 different subscription plans to help you "
+"offers monthly Bug Bounties through 4 different subscription plans to help you "
 "achieve this"
 msgstr "通过4种不同的订阅计划每月提供漏洞狩猎，以帮助你实现这一目标"
 

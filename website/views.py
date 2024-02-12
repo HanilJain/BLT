@@ -1,108 +1,159 @@
+import base64
+import io
 import json
 import os
 import random
 import re
 import time
-import urllib.request
 import urllib.error
 import urllib.parse
-import stripe
-import humanize
+import urllib.request
+import uuid
 from collections import deque
-from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, urlunparse
-from urllib.parse import urlsplit
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from urllib.parse import urlparse, urlsplit, urlunparse
 
+import humanize
 import requests
 import requests.exceptions
-import base64
 import six
-import uuid
+import stripe
+import tweepy
 
-#from django_cron import CronJobBase, Schedule
+# from django_cron import CronJobBase, Schedule
 from allauth.account.models import EmailAddress
-from allauth.account.signals import user_logged_in
+from allauth.account.signals import user_logged_in, user_signed_up
+from allauth.socialaccount.providers.facebook.views import FacebookOAuth2Adapter
+from allauth.socialaccount.providers.github.views import GitHubOAuth2Adapter
+from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
+from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from bs4 import BeautifulSoup
-from django.db.transaction import atomic
+from dj_rest_auth.registration.views import SocialConnectView, SocialLoginView
+from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, logout
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
+from django.contrib.sites.shortcuts import get_current_site
+from django.core import serializers
+from django.core.exceptions import ValidationError
 from django.core.files import File
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.mail import send_mail
-from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-from django.urls import reverse, reverse_lazy
-from django.db.models import Sum, Count, Q
+from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
+from django.core.validators import URLValidator
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import ExtractMonth
+from django.db.transaction import atomic
 from django.dispatch import receiver
-from django.http import Http404,JsonResponse,HttpResponseRedirect,HttpResponse,HttpResponseNotFound, HttpResponseBadRequest
-from django.shortcuts import render, redirect, get_object_or_404
+from django.http import (
+    Http404,
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseNotFound,
+    HttpResponseRedirect,
+    JsonResponse,
+)
+from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils.decorators import method_decorator
+from django.utils.timezone import now
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
-from django.views.generic import DetailView, TemplateView, ListView, View
+from django.views.generic import DetailView, ListView, TemplateView, View
 from django.views.generic.edit import CreateView
-from django.core import serializers
-from django.conf import settings
-
-from user_agents import parse
+from PIL import Image, ImageDraw, ImageFont
 from rest_framework.authtoken.models import Token
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
-from allauth.socialaccount.providers.facebook.views import FacebookOAuth2Adapter
-from dj_rest_auth.registration.views import SocialLoginView
-from allauth.socialaccount.providers.github.views import GitHubOAuth2Adapter
-from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
-from allauth.socialaccount.providers.oauth2.client import OAuth2Client
-from dj_rest_auth.registration.views import SocialConnectView
-from blt import settings
 from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.response import Response
+from user_agents import parse
 
-from website.models import (
-
-    Winner,
-    Payment,
-    Wallet,
-    Issue,
-    Points,
-    Hunt,
-    Domain,
-    InviteFriend,
-    UserProfile,
-    IP,
-    CompanyAdmin,
-    Subscription,
-    Company,
-    IssueScreenshot
-)
-from .forms import FormInviteFriend, UserProfileForm, HuntForm, CaptchaForm, QuickIssueForm
-
-from decimal import Decimal
-from django.conf import settings
+from blt import settings
 from comments.models import Comment
-from django.core.validators import URLValidator
-from django.core.exceptions import ValidationError
-from django.http import HttpRequest
+from notification_app.models import Notification
+from website.models import (
+    IP,
+    Bid,
+    Company,
+    CompanyAdmin,
+    ContributorStats,
+    Domain,
+    Hunt,
+    InviteFriend,
+    Issue,
+    IssueScreenshot,
+    Monitor,
+    Payment,
+    Points,
+    Subscription,
+    UserProfile,
+    Wallet,
+    Winner,
+)
+
+from .forms import (
+    CaptchaForm,
+    HuntForm,
+    MonitorForm,
+    QuickIssueForm,
+    UserDeleteForm,
+    UserProfileForm,
+)
+
+WHITELISTED_IMAGE_TYPES = {
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "png": "image/png",
+}
+
+from PIL import Image
+
+
+def image_validator(img):
+    try:
+        filesize = img.file.size
+    except:
+        filesize = img.size
+
+    extension = img.name.split(".")[-1]
+    content_type = img.content_type
+    megabyte_limit = 3.0
+    if not extension or extension.lower() not in WHITELISTED_IMAGE_TYPES.keys():
+        error = "Invalid image types"
+        return error
+    elif filesize > megabyte_limit * 1024 * 1024:
+        error = "Max file size is %sMB" % str(megabyte_limit)
+        return error
+
+    elif content_type not in WHITELISTED_IMAGE_TYPES.values():
+        error = "invalid image content-type"
+        return error
+    else:
+        return True
+
 
 def is_valid_https_url(url):
-    validate = URLValidator(schemes=['https'])  # Only allow HTTPS URLs
+    validate = URLValidator(schemes=["https"])  # Only allow HTTPS URLs
     try:
         validate(url)
         return True
     except ValidationError:
         return False
+
+
 def rebuild_safe_url(url):
     parsed_url = urlparse(url)
     # Rebuild the URL with scheme, netloc, and path only
-    return urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
+    return urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, "", "", ""))
 
-#@cache_page(60 * 60 * 24)
+
+# @cache_page(60 * 60 * 24)
 def index(request, template="index.html"):
-    
     try:
         domains = random.sample(Domain.objects.all(), 3)
     except:
@@ -113,7 +164,7 @@ def index(request, template="index.html"):
     except:
         pass
 
-    latest_hunts_filter = request.GET.get("latest_hunts",None)
+    latest_hunts_filter = request.GET.get("latest_hunts", None)
 
     bug_count = Issue.objects.all().count()
     user_count = User.objects.all().count()
@@ -130,37 +181,47 @@ def index(request, template="index.html"):
     for activity in Issue.objects.all():
         activity_screenshots[activity] = IssueScreenshot.objects.filter(issue=activity).first()
 
-    top_companies = Issue.objects.values("domain__name").annotate(count=Count('domain__name')).order_by("-count")[:10]
-    top_testers = Issue.objects.values("user__id","user__username").filter(user__isnull=False).annotate(count=Count('user__username')).order_by("-count")[:10]
+    top_companies = (
+        Issue.objects.values("domain__name")
+        .annotate(count=Count("domain__name"))
+        .order_by("-count")[:10]
+    )
+    top_testers = (
+        Issue.objects.values("user__id", "user__username")
+        .filter(user__isnull=False)
+        .annotate(count=Count("user__username"))
+        .order_by("-count")[:10]
+    )
 
     if request.user.is_anonymous:
         activities = Issue.objects.exclude(Q(is_hidden=True))[0:10]
-    else :
+    else:
         activities = Issue.objects.exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[0:10]
 
     top_hunts = Hunt.objects.values(
-        'id',
-        'name',
-        'url',
-        'logo',
-        'starts_on',
-        'starts_on__day',
-        'starts_on__month',
-        'starts_on__year',
-        'end_on',
-        'end_on__day',
-        'end_on__month',
-        'end_on__year',
+        "id",
+        "name",
+        "url",
+        "logo",
+        "starts_on",
+        "starts_on__day",
+        "starts_on__month",
+        "starts_on__year",
+        "end_on",
+        "end_on__day",
+        "end_on__month",
+        "end_on__year",
     ).annotate(total_prize=Sum("huntprize__value"))
 
-    if latest_hunts_filter != None:
+    if latest_hunts_filter is not None:
         top_hunts = top_hunts.filter(result_published=True).order_by("-created")[:3]
     else:
-        top_hunts = top_hunts.filter(is_published=True,result_published=False).order_by("-created")[:3]
-
+        top_hunts = top_hunts.filter(is_published=True, result_published=False).order_by(
+            "-created"
+        )[:3]
 
     context = {
-        "server_url": request.build_absolute_uri('/'),
+        "server_url": request.build_absolute_uri("/"),
         "activities": activities,
         "domains": domains,
         "hunts": Hunt.objects.exclude(txn_id__isnull=True)[:4],
@@ -176,40 +237,40 @@ def index(request, template="index.html"):
         "domain_count": domain_count,
         "wallet": wallet,
         "captcha_form": captcha_form,
-        "activity_screenshots":activity_screenshots,
-        "top_companies":top_companies,
-        "top_testers":top_testers,
+        "activity_screenshots": activity_screenshots,
+        "top_companies": top_companies,
+        "top_testers": top_testers,
         "top_hunts": top_hunts,
-        "ended_hunts": False if latest_hunts_filter == None else True 
+        "ended_hunts": False if latest_hunts_filter is None else True,
     }
     return render(request, template, context)
 
-#@cache_page(60 * 60 * 24)
-def newhome(request, template="new_home.html"):
 
-    if request.method == 'POST':
+# @cache_page(60 * 60 * 24)
+def newhome(request, template="new_home.html"):
+    if request.method == "POST":
         form = QuickIssueForm(request.POST)
         if form.is_valid():
             query_string = urllib.parse.urlencode(form.cleaned_data)
-            redirect_url = f'/report/?{query_string}'
+            redirect_url = f"/report/?{query_string}"
             return HttpResponseRedirect(redirect_url)
-    
+
     try:
         if not EmailAddress.objects.get(email=request.user.email).verified:
             messages.error(request, "Please verify your email address")
     except:
         pass
 
-    bugs=Issue.objects.exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id)).all()
+    bugs = Issue.objects.exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id)).all()
     bugs_screenshots = {}
 
     for bug in bugs:
         bugs_screenshots[bug] = IssueScreenshot.objects.filter(issue=bug)[0:3]
 
-    paginator = Paginator(bugs, 9)
-    page_number = request.GET.get('page')
+    paginator = Paginator(bugs, 15)
+    page_number = request.GET.get("page")
     page_obj = paginator.get_page(page_number)
-    
+
     # latest_hunts_filter = request.GET.get("latest_hunts",None)
 
     # bug_count = Issue.objects.all().count()
@@ -246,22 +307,22 @@ def newhome(request, template="new_home.html"):
     #     'end_on__year',
     # ).annotate(total_prize=Sum("huntprize__value"))
 
-    # if latest_hunts_filter != None:
+    # if latest_hunts_filter is not None:
     #     top_hunts = top_hunts.filter(result_published=True).order_by("-created")[:3]
     # else:
     #     top_hunts = top_hunts.filter(is_published=True,result_published=False).order_by("-created")[:3]
 
-
     context = {
         "bugs": page_obj,
-        "bugs_screenshots" : bugs_screenshots,
+        "bugs_screenshots": bugs_screenshots,
         # "server_url": request.build_absolute_uri('/'),
         # "activities": activities,
         # "hunts": Hunt.objects.exclude(txn_id__isnull=True)[:4],
         "leaderboard": User.objects.filter(
             points__created__month=datetime.now().month,
             points__created__year=datetime.now().year,
-        )
+        ),
+        "room_name": "brodcast",
         # .annotate(total_score=Sum("points__score"))
         # .order_by("-total_score")[:10],
         # "bug_count": bug_count,
@@ -274,9 +335,30 @@ def newhome(request, template="new_home.html"):
         # "top_companies":top_companies,
         # "top_testers":top_testers,
         # "top_hunts": top_hunts,
-        # "ended_hunts": False if latest_hunts_filter == None else True 
+        # "ended_hunts": False if latest_hunts_filter is None else True
     }
     return render(request, template, context)
+
+
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+
+
+def notification(request):
+    notification = Notification.objects.filter(user=request.user).all()
+    messages = [n.message for n in notification]
+    notification_id = [n.id for n in notification]
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        "notification_" + str(request.user.id),
+        {
+            "type": "send_notification",
+            "notification_id": notification_id,
+            "message": messages,
+        },
+    )
+    return HttpResponse("Notification Sent")
+
 
 def is_safe_url(url, allowed_hosts, allowed_paths=None):
     if not is_valid_https_url(url):
@@ -292,23 +374,25 @@ def is_safe_url(url, allowed_hosts, allowed_paths=None):
 
     return True
 
+
 def safe_redirect(url, allowed_hosts, allowed_paths=None):
     if is_safe_url(url, allowed_hosts, allowed_paths):
         safe_url = rebuild_safe_url(url)
         return redirect(safe_url)
     else:
-        return HttpResponseBadRequest('Invalid redirection URL.')
+        return HttpResponseBadRequest("Invalid redirection URL.")
+
 
 def github_callback(request):
-    ALLOWED_HOSTS = ['github.com']
+    ALLOWED_HOSTS = ["github.com"]
     params = urllib.parse.urlencode(request.GET)
     url = f"{settings.CALLBACK_URL_FOR_GITHUB}?{params}"
-    
+
     return safe_redirect(url, ALLOWED_HOSTS)
 
 
 def google_callback(request):
-    ALLOWED_HOSTS = ['accounts.google.com']
+    ALLOWED_HOSTS = ["accounts.google.com"]
     params = urllib.parse.urlencode(request.GET)
     url = f"{settings.CALLBACK_URL_FOR_GOOGLE}?{params}"
 
@@ -316,7 +400,7 @@ def google_callback(request):
 
 
 def facebook_callback(request):
-    ALLOWED_HOSTS = ['www.facebook.com']
+    ALLOWED_HOSTS = ["www.facebook.com"]
     params = urllib.parse.urlencode(request.GET)
     url = f"{settings.CALLBACK_URL_FOR_FACEBOOK}?{params}"
 
@@ -366,6 +450,7 @@ class FacebookConnect(SocialConnectView):
         # must be absolute:
         return self.request.build_absolute_uri(reverse("facebook_callback"))
 
+
 class GithubConnect(SocialConnectView):
     adapter_class = GitHubOAuth2Adapter
     client_class = OAuth2Client
@@ -395,9 +480,9 @@ def company_dashboard(request, template="index_company.html"):
         if not company_admin.is_active:
             return HttpResponseRedirect("/")
         hunts = Hunt.objects.filter(is_published=True, domain=company_admin.domain)
-        upcoming_hunt = list()
-        ongoing_hunt = list()
-        previous_hunt = list()
+        upcoming_hunt = []
+        ongoing_hunt = []
+        previous_hunt = []
         for hunt in hunts:
             if ((hunt.starts_on - datetime.now(timezone.utc)).total_seconds()) > 0:
                 upcoming_hunt.append(hunt)
@@ -429,9 +514,7 @@ def admin_company_dashboard(request, template="admin_dashboard_company.html"):
 
 
 @login_required(login_url="/accounts/login")
-def admin_company_dashboard_detail(
-    request, pk, template="admin_dashboard_company_detail.html"
-):
+def admin_company_dashboard_detail(request, pk, template="admin_dashboard_company_detail.html"):
     user = request.user
     if user.is_superuser:
         if not user.is_active:
@@ -456,9 +539,9 @@ def admin_dashboard(request, template="admin_home.html"):
 @login_required(login_url="/accounts/login")
 def user_dashboard(request, template="index_user.html"):
     hunts = Hunt.objects.filter(is_published=True)
-    upcoming_hunt = list()
-    ongoing_hunt = list()
-    previous_hunt = list()
+    upcoming_hunt = []
+    ongoing_hunt = []
+    previous_hunt = []
     for hunt in hunts:
         if ((hunt.starts_on - datetime.now(timezone.utc)).total_seconds()) > 0:
             upcoming_hunt.append(hunt)
@@ -484,8 +567,32 @@ def find_key(request, token):
     raise Http404("Token or key does not exist")
 
 
+class UserDeleteView(LoginRequiredMixin, View):
+    """
+    Deletes the currently signed-in user and all associated data.
+    """
+
+    def get(self, request, *args, **kwargs):
+        form = UserDeleteForm()
+        return render(request, "user_deletion.html", {"form": form})
+
+    def post(self, request, *args, **kwargs):
+        form = UserDeleteForm(request.POST)
+        if form.is_valid():
+            user = request.user
+            logout(request)
+            user.delete()
+            messages.success(request, "Account successfully deleted")
+            return redirect(reverse("index"))
+        return render(request, "user_deletion.html", {"form": form})
+
+
 class IssueBaseCreate(object):
     def form_valid(self, form):
+        print(
+            "processing form_valid IssueBaseCreate for ip address: ",
+            get_client_ip(self.request),
+        )
         score = 3
         obj = form.save(commit=False)
         obj.user = self.request.user
@@ -496,8 +603,10 @@ class IssueBaseCreate(object):
         obj.domain = domain
         if self.request.POST.get("screenshot-hash"):
             filename = self.request.POST.get("screenshot-hash")
-            extension = filename.split(".")[-1] 
-            self.request.POST["screenshot-hash"] = filename[:99] + str(uuid.uuid4()) + "." + extension
+            extension = filename.split(".")[-1]
+            self.request.POST["screenshot-hash"] = (
+                filename[:99] + str(uuid.uuid4()) + "." + extension
+            )
 
             reopen = default_storage.open(
                 "uploads\/" + self.request.POST.get("screenshot-hash") + ".png", "rb"
@@ -509,14 +618,50 @@ class IssueBaseCreate(object):
                 save=True,
             )
 
-
         obj.user_agent = self.request.META.get("HTTP_USER_AGENT")
         obj.save()
         p = Points.objects.create(user=self.request.user, issue=obj, score=score)
 
     def process_issue(self, user, obj, created, domain, tokenauth=False, score=3):
+        print("processing process_issue for ip address: ", get_client_ip(self.request))
         p = Points.objects.create(user=user, issue=obj, score=score)
-        messages.success(self.request, "Bug added! +" + str(score))
+        messages.success(self.request, "Bug added ! +" + str(score))
+        # tweet feature
+        try:
+            auth = tweepy.Client(
+                settings.BEARER_TOKEN,
+                settings.APP_KEY,
+                settings.APP_KEY_SECRET,
+                settings.ACCESS_TOKEN,
+                settings.ACCESS_TOKEN_SECRET,
+            )
+
+            blt_url = "https://" + "%s/issue/%d" % (
+                settings.DOMAIN_NAME,
+                obj.id,
+            )
+            domain_name = domain.get_name
+            twitter_account = (
+                "@" + domain.get_twitter_account(domain_name) + " "
+                if domain.get_twitter_account(domain_name)
+                else ""
+            )
+
+            issue_title = obj.description + " " if not obj.is_hidden else ""
+
+            message = "%sAn Issue %shas been reported on %s by %s on %s.\n Have look here %s" % (
+                twitter_account,
+                issue_title,
+                domain_name,
+                user.username,
+                settings.PROJECT_NAME,
+                blt_url,
+            )
+
+            auth.create_tweet(text=message)
+            print("\n\n\n\nDone")
+        except Exception as e:
+            print(e)
 
         if created:
             try:
@@ -543,6 +688,7 @@ class IssueBaseCreate(object):
                 [email_to],
                 html_message=msg_html,
             )
+
         else:
             email_to = domain.email
             try:
@@ -552,7 +698,7 @@ class IssueBaseCreate(object):
                 name = "support"
                 domain.email = email_to
                 domain.save()
-            if tokenauth == False:
+            if not tokenauth:
                 msg_plain = render_to_string(
                     "email/bug_added.txt",
                     {
@@ -605,15 +751,26 @@ class IssueBaseCreate(object):
                 [email_to],
                 html_message=msg_html,
             )
-
         return HttpResponseRedirect("/")
+
+
+def get_client_ip(request):
+    """Extract the client's IP address from the request."""
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(",")[0]
+    else:
+        ip = request.META.get("REMOTE_ADDR")
+    return ip
+
 
 class IssueCreate(IssueBaseCreate, CreateView):
     model = Issue
-    fields = ["url", "description", "domain", "label","markdown_description"]
+    fields = ["url", "description", "domain", "label", "markdown_description", "cve_id"]
     template_name = "report.html"
 
     def get_initial(self):
+        print("processing post for ip address: ", get_client_ip(self.request))
         try:
             json_data = json.loads(self.request.body)
             if not self.request.GET._mutable:
@@ -625,6 +782,8 @@ class IssueCreate(IssueBaseCreate, CreateView):
             self.request.POST["label"] = json_data["label"]
             self.request.POST["token"] = json_data["token"]
             self.request.POST["type"] = json_data["type"]
+            self.request.POST["cve_id"] = json_data["cve_id"]
+            self.request.POST["cve_score"] = json_data["cve_score"]
 
             if self.request.POST.get("file"):
                 if isinstance(self.request.POST.get("file"), six.string_types):
@@ -650,9 +809,7 @@ class IssueCreate(IssueBaseCreate, CreateView):
                         TypeError("invalid_image")
 
                     # Generate file name:
-                    file_name = str(uuid.uuid4())[
-                        :12
-                    ]  # 12 characters are more than enough.
+                    file_name = str(uuid.uuid4())[:12]  # 12 characters are more than enough.
                     # Get the file name extension:
                     extension = imghdr.what(file_name, decoded_file)
                     extension = "jpg" if extension == "jpeg" else extension
@@ -670,29 +827,35 @@ class IssueCreate(IssueBaseCreate, CreateView):
             tokenauth = False
         initial = super(IssueCreate, self).get_initial()
         if self.request.POST.get("screenshot-hash"):
-            initial["screenshot"] = (
-                "uploads\/" + self.request.POST.get("screenshot-hash") + ".png"
-            )
+            initial["screenshot"] = "uploads\/" + self.request.POST.get("screenshot-hash") + ".png"
         return initial
 
-    def post(self, request, *args, **kwargs):
-        
-        # resolve domain
-        url = request.POST.get("url").replace("www.","").replace("https://","")
-        
-        request.POST._mutable = True
-        request.POST.update(url=url) # only domain.com will be stored in db
-        request.POST._mutable = False
+    # def get(self, request, *args, **kwargs):
+    #     print("processing get for ip address: ", get_client_ip(request))
 
+    #     captcha_form = CaptchaForm()
+    #     return render(
+    #         request,
+    #         self.template_name,
+    #         {"form": self.get_form(), "captcha_form": captcha_form},
+    #     )
+
+    def post(self, request, *args, **kwargs):
+        print("processing post for ip address: ", get_client_ip(request))
+        # resolve domain
+        url = request.POST.get("url").replace("www.", "").replace("https://", "")
+
+        request.POST._mutable = True
+        request.POST.update(url=url)  # only domain.com will be stored in db
+        request.POST._mutable = False
 
         # disable domain search on testing
         if not settings.IS_TEST:
             try:
-
                 if settings.DOMAIN_NAME in url:
-                    print('Web site exists')
+                    print("Web site exists")
 
-                # skip domain validation check if bugreport server down 
+                # skip domain validation check if bugreport server down
                 elif request.POST["label"] == "7":
                     pass
 
@@ -703,23 +866,104 @@ class IssueCreate(IssueBaseCreate, CreateView):
                         try:
                             response = requests.get(safe_url, timeout=5)
                             if response.status_code == 200:
-                                print('Web site exists')
+                                print("Web site exists")
                             else:
                                 raise Exception
-                        except Exception as e:
+                        except Exception:
                             raise Exception
                     else:
                         raise Exception
             except:
-                messages.error(request,"Domain does not exist")
-                return HttpResponseRedirect("/report/")
+                # TODO: it could be that the site is down so we can consider logging this differently
+                messages.error(request, "Domain does not exist")
+
+                captcha_form = CaptchaForm(request.POST)
+                return render(
+                    self.request,
+                    "report.html",
+                    {"form": self.get_form(), "captcha_form": captcha_form},
+                )
+        # if not request.FILES.get("screenshots"):
+        #     messages.error(request, "Screenshot is required")
+        #     captcha_form = CaptchaForm(request.POST)
+        #     return render(
+        #         self.request,
+        #         "report.html",
+        #         {"form": self.get_form(), "captcha_form": captcha_form},
+        #     )
+
+        screenshot = request.FILES.get("screenshots")
+        if not screenshot:
+        # if not request.FILES.get("screenshots"):
+        #     messages.error(request, "Screenshot is required")
+        #     captcha_form = CaptchaForm(request.POST)
+        #     return render(
+        #         self.request,
+        #         "report.html",
+        #         {"form": self.get_form(), "captcha_form": captcha_form},
+        #     )
+
+        screenshot = request.FILES.get("screenshots")
+        if not screenshot:
+            messages.error(request, "Screenshot is required")
+            captcha_form = CaptchaForm(request.POST)
+            return render(
+                request,
+                "report.html",
+                {"form": self.get_form(), "captcha_form": captcha_form},
+            )
+
+        try:
+            # Attempt to open the image to validate if it's a correct format
+            img = Image.open(screenshot)
+            img.verify()  # Verify that it is, in fact, an image
+        except (IOError, ValueError):
+            messages.error(request, "Invalid image file.")
+            captcha_form = CaptchaForm(request.POST)
+            return render(
+                request,
+                request,
+                "report.html",
+                {"form": self.get_form(), "captcha_form": captcha_form},
+            )
+
+        try:
+            # Attempt to open the image to validate if it's a correct format
+            img = Image.open(screenshot)
+            img.verify()  # Verify that it is, in fact, an image
+        except (IOError, ValueError):
+            messages.error(request, "Invalid image file.")
+            captcha_form = CaptchaForm(request.POST)
+            return render(
+                request,
+                "report.html",
+                {"form": self.get_form(), "captcha_form": captcha_form},
+            )
 
         return super().post(request, *args, **kwargs)
 
     def form_valid(self, form):
+        print(
+            "processing form_valid in IssueCreate for ip address: ",
+            get_client_ip(self.request),
+        )
+        reporter_ip = get_client_ip(self.request)
+        form.instance.reporter_ip_address = reporter_ip
+
+        # implement rate limit
+        limit = 50 if self.request.user.is_authenticated else 30
+        today = now().date()
+        recent_issues_count = Issue.objects.filter(
+            reporter_ip_address=reporter_ip, created__date=today
+        ).count()
+
+        if recent_issues_count >= limit:
+            messages.error(self.request, "You have reached your issue creation limit for today.")
+            return render(self.request, "report.html", {"form": self.get_form()})
+        form.instance.reporter_ip_address = reporter_ip
 
         @atomic
-        def create_issue(self,form):
+        def create_issue(self, form):
             tokenauth = False
             obj = form.save(commit=False)
             if self.request.user.is_authenticated:
@@ -733,29 +977,32 @@ class IssueCreate(IssueBaseCreate, CreateView):
             captcha_form = CaptchaForm(self.request.POST)
             if not captcha_form.is_valid() and not settings.TESTING:
                 messages.error(self.request, "Invalid Captcha!")
-                return HttpResponseRedirect("/report/")
-            
-            clean_domain = obj.domain_name.replace("www.", "").replace("https://","").replace("http://","")
+
+                return render(
+                    self.request,
+                    "report.html",
+                    {"form": self.get_form(), "captcha_form": captcha_form},
+                )
+            clean_domain = (
+                obj.domain_name.replace("www.", "").replace("https://", "").replace("http://", "")
+            )
             domain = Domain.objects.filter(name=clean_domain).first()
 
-            domain_exists = False if domain==None else True 
+            domain_exists = False if domain is None else True
 
             if not domain_exists:
-                domain = Domain.objects.create(
-                    name=clean_domain,
-                    url=clean_domain
-                )
+                domain = Domain.objects.create(name=clean_domain, url=clean_domain)
                 domain.save()
-            
-            hunt = self.request.POST.get("hunt",None)
-            if hunt != None and hunt!="None":
+
+            hunt = self.request.POST.get("hunt", None)
+            if hunt is not None and hunt != "None":
                 hunt = Hunt.objects.filter(id=hunt).first()
                 obj.hunt = hunt
 
             obj.domain = domain
-            obj.is_hidden = bool(self.request.POST.get("private",False))
+            # obj.is_hidden = bool(self.request.POST.get("private", False))
+            obj.cve_score = obj.get_cve_score()
             obj.save()
-
 
             if not domain_exists and (self.request.user.is_authenticated or tokenauth):
                 p = Points.objects.create(user=self.request.user, domain=domain, score=1)
@@ -763,7 +1010,8 @@ class IssueCreate(IssueBaseCreate, CreateView):
 
             if self.request.POST.get("screenshot-hash"):
                 reopen = default_storage.open(
-                    "uploads\/" + self.request.POST.get("screenshot-hash") + ".png", "rb"
+                    "uploads\/" + self.request.POST.get("screenshot-hash") + ".png",
+                    "rb",
                 )
                 django_file = File(reopen)
                 obj.screenshot.save(
@@ -771,29 +1019,48 @@ class IssueCreate(IssueBaseCreate, CreateView):
                     django_file,
                     save=True,
                 )
-            obj.user_agent = self.request.META.get("HTTP_USER_AGENT")    
+            obj.user_agent = self.request.META.get("HTTP_USER_AGENT")
 
             if len(self.request.FILES.getlist("screenshots")) > 5:
                 messages.error(self.request, "Max limit of 5 images!")
                 obj.delete()
-                return HttpResponseRedirect("/report/")
+                return render(
+                    self.request,
+                    "report.html",
+                    {"form": self.get_form(), "captcha_form": captcha_form},
+                )
             for screenshot in self.request.FILES.getlist("screenshots"):
-                filename = screenshot.name
-                extension = filename.split(".")[-1] 
-                screenshot.name = (filename + str(uuid.uuid4()))[:90] + "." + extension            
-                default_storage.save(f"screenshots/{screenshot.name}",screenshot)
-                IssueScreenshot.objects.create(image=f"screenshots/{screenshot.name}",issue=obj)
-                
+                img_valid = image_validator(screenshot)
+                if img_valid is True:
+                    filename = screenshot.name
+                    extension = filename.split(".")[-1]
+                    screenshot.name = (filename[:10] + str(uuid.uuid4()))[:40] + "." + extension
+                    default_storage.save(f"screenshots/{screenshot.name}", screenshot)
+                    IssueScreenshot.objects.create(
+                        image=f"screenshots/{screenshot.name}", issue=obj
+                    )
+                else:
+                    messages.error(self.request, img_valid)
+                    return render(
+                        self.request,
+                        "report.html",
+                        {"form": self.get_form(), "captcha_form": captcha_form},
+                    )
 
             obj_screenshots = IssueScreenshot.objects.filter(issue_id=obj.id)
-            screenshot_text = ''
+            screenshot_text = ""
             for screenshot in obj_screenshots:
                 screenshot_text += "![0](" + screenshot.image.url + ") "
 
-            team_members_id = [member["id"] for member in User.objects.values("id").filter(email__in=self.request.POST.getlist("team_members"))] + [self.request.user.id]
+            team_members_id = [
+                member["id"]
+                for member in User.objects.values("id").filter(
+                    email__in=self.request.POST.getlist("team_members")
+                )
+            ] + [self.request.user.id]
             for member_id in team_members_id:
-                if member_id == None:
-                    team_members_id.remove(member_id) # remove None values if user not exists
+                if member_id is None:
+                    team_members_id.remove(member_id)  # remove None values if user not exists
             obj.team_members.set(team_members_id)
 
             obj.save()
@@ -813,9 +1080,7 @@ class IssueCreate(IssueBaseCreate, CreateView):
                 user_prof.save()
 
             if tokenauth:
-                total_issues = Issue.objects.filter(
-                    user=User.objects.get(id=token.user_id)
-                ).count()
+                total_issues = Issue.objects.filter(user=User.objects.get(id=token.user_id)).count()
                 user_prof = UserProfile.objects.get(user=User.objects.get(id=token.user_id))
                 if total_issues <= 10:
                     user_prof.title = 1
@@ -830,15 +1095,13 @@ class IssueCreate(IssueBaseCreate, CreateView):
 
             redirect_url = "/report"
 
-
             if domain.github and os.environ.get("GITHUB_ACCESS_TOKEN"):
-                from giturlparse import parse
                 import json
-                import requests
 
-                github_url = (
-                    domain.github.replace("https", "git").replace("http", "git") + ".git"
-                )
+                import requests
+                from giturlparse import parse
+
+                github_url = domain.github.replace("https", "git").replace("http", "git") + ".git"
                 p = parse(github_url)
 
                 url = "https://api.github.com/repos/%s/%s/issues" % (p.owner, p.repo)
@@ -849,20 +1112,36 @@ class IssueCreate(IssueBaseCreate, CreateView):
                     the_user = obj.user
                 issue = {
                     "title": obj.description,
-                    "body": obj.markdown_description + "\n\n" + screenshot_text +
-                    "https://" + settings.FQDN + "/issue/"
-                    + str(obj.id) + " found by " + str(the_user) + " at url: " + obj.url,
+                    "body": obj.markdown_description
+                    + "\n\n"
+                    + screenshot_text
+                    + "https://"
+                    + settings.FQDN
+                    + "/issue/"
+                    + str(obj.id)
+                    + " found by "
+                    + str(the_user)
+                    + " at url: "
+                    + obj.url,
                     "labels": ["bug", settings.PROJECT_NAME_LOWER],
                 }
                 r = requests.post(
                     url,
                     json.dumps(issue),
-                    headers={
-                        "Authorization": "token " + os.environ.get("GITHUB_ACCESS_TOKEN")
-                    },
+                    headers={"Authorization": "token " + os.environ.get("GITHUB_ACCESS_TOKEN")},
                 )
                 response = r.json()
-                obj.github_url = response["html_url"]
+                try:
+                    obj.github_url = response["html_url"]
+                except KeyError:
+                    send_mail(
+                        "Error in github issue creation, check your github settings",
+                        "Error in github issue creation, check your github settings",
+                        settings.EMAIL_TO_STRING,
+                        [domain.email],
+                        fail_silently=True,
+                    )
+                    pass
                 obj.save()
 
             if not (self.request.user.is_authenticated or tokenauth):
@@ -881,12 +1160,20 @@ class IssueCreate(IssueBaseCreate, CreateView):
             else:
                 self.process_issue(self.request.user, obj, domain_exists, domain)
                 return HttpResponseRedirect(redirect_url + "/")
-        
-        return create_issue(self,form)
+
+        return create_issue(self, form)
 
     def get_context_data(self, **kwargs):
+        # if self.request is a get, clear out the form data
+        if self.request.method == "GET":
+            self.request.POST = {}
+            self.request.GET = {}
+
+        print("processing get_context_data for ip address: ", get_client_ip(self.request))
         context = super(IssueCreate, self).get_context_data(**kwargs)
-        context["activities"] = Issue.objects.exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))[0:10]
+        context["activities"] = Issue.objects.exclude(
+            Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
+        )[0:10]
         context["captcha_form"] = CaptchaForm()
         if self.request.user.is_authenticated:
             context["wallet"] = Wallet.objects.get(user=self.request.user)
@@ -900,16 +1187,23 @@ class IssueCreate(IssueBaseCreate, CreateView):
         )
 
         # automatically add specified hunt to dropdown of Bugreport
-        report_on_hunt = self.request.GET.get("hunt",None)
+        report_on_hunt = self.request.GET.get("hunt", None)
         if report_on_hunt:
-            context["hunts"] = Hunt.objects.values("id","name").filter(id=report_on_hunt,is_published=True,result_published=False)
+            context["hunts"] = Hunt.objects.values("id", "name").filter(
+                id=report_on_hunt, is_published=True, result_published=False
+            )
             context["report_on_hunt"] = True
-        else:    
-            context["hunts"] = Hunt.objects.values("id","name").filter(is_published=True,result_published=False)
+        else:
+            context["hunts"] = Hunt.objects.values("id", "name").filter(
+                is_published=True, result_published=False
+            )
             context["report_on_hunt"] = False
 
-        context['top_domains'] = Issue.objects.values("domain__name").annotate(count=Count('domain__name')).order_by("-count")[:30]
-
+        context["top_domains"] = (
+            Issue.objects.values("domain__name")
+            .annotate(count=Count("domain__name"))
+            .order_by("-count")[:30]
+        )
 
         return context
 
@@ -979,9 +1273,7 @@ class UserProfileDetailView(DetailView):
         user = self.object
         context = super(UserProfileDetailView, self).get_context_data(**kwargs)
         context["my_score"] = list(
-            Points.objects.filter(user=self.object)
-            .aggregate(total_score=Sum("score"))
-            .values()
+            Points.objects.filter(user=self.object).aggregate(total_score=Sum("score")).values()
         )[0]
         context["websites"] = (
             Domain.objects.filter(issue__user=self.object)
@@ -989,14 +1281,11 @@ class UserProfileDetailView(DetailView):
             .order_by("-total")
         )
         context["activities"] = Issue.objects.filter(user=self.object, hunt=None).exclude(
-            Q(is_hidden=True) & ~Q(user_id=self.request.user.id))[0:10]
+            Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
+        )[0:10]
         context["profile_form"] = UserProfileForm()
-        context["total_open"] = Issue.objects.filter(
-            user=self.object, status="open"
-        ).count()
-        context["total_closed"] = Issue.objects.filter(
-            user=self.object, status="closed"
-        ).count()
+        context["total_open"] = Issue.objects.filter(user=self.object, status="open").count()
+        context["total_closed"] = Issue.objects.filter(user=self.object, status="closed").count()
         context["current_month"] = datetime.now().month
         if self.request.user.is_authenticated:
             context["wallet"] = Wallet.objects.get(user=self.request.user)
@@ -1011,12 +1300,11 @@ class UserProfileDetailView(DetailView):
             .annotate(c=Count("id"))
             .order_by()
         )
-        context["total_bugs"] = Issue.objects.filter(
-            user=self.object, hunt=None
-        ).count()
+        context["total_bugs"] = Issue.objects.filter(user=self.object, hunt=None).count()
         for i in range(0, 7):
             context["bug_type_" + str(i)] = Issue.objects.filter(
-                user=self.object, hunt=None, label=str(i))
+                user=self.object, hunt=None, label=str(i)
+            )
 
         arr = []
         allFollowers = user.userprofile.follower.all()
@@ -1034,21 +1322,19 @@ class UserProfileDetailView(DetailView):
             str(prof.user.email) for prof in user.userprofile.follower.all()
         ]
         context["bookmarks"] = user.userprofile.issue_saved.all()
-        context['issues_hidden'] = "checked" if user.userprofile.issues_hidden else "!checked"
+        context["issues_hidden"] = "checked" if user.userprofile.issues_hidden else "!checked"
         return context
 
     @method_decorator(login_required)
     def post(self, request, *args, **kwargs):
-        form = UserProfileForm(
-            request.POST, request.FILES, instance=request.user.userprofile
-        )
+        form = UserProfileForm(request.POST, request.FILES, instance=request.user.userprofile)
         if request.FILES.get("user_avatar") and form.is_valid():
             form.save()
         else:
-            hide = True if request.POST.get('issues_hidden')=='on' else False
+            hide = True if request.POST.get("issues_hidden") == "on" else False
             user_issues = Issue.objects.filter(user=request.user)
             user_issues.update(is_hidden=hide)
-            request.user.userprofile.issues_hidden=hide
+            request.user.userprofile.issues_hidden = hide
             request.user.userprofile.save()
         return redirect(reverse("profile", kwargs={"slug": kwargs.get("slug")}))
 
@@ -1073,9 +1359,7 @@ class UserProfileDetailsView(DetailView):
         user = self.object
         context = super(UserProfileDetailsView, self).get_context_data(**kwargs)
         context["my_score"] = list(
-            Points.objects.filter(user=self.object)
-            .aggregate(total_score=Sum("score"))
-            .values()
+            Points.objects.filter(user=self.object).aggregate(total_score=Sum("score")).values()
         )[0]
         context["websites"] = (
             Domain.objects.filter(issue__user=self.object)
@@ -1085,15 +1369,12 @@ class UserProfileDetailsView(DetailView):
         if self.request.user.is_authenticated:
             context["wallet"] = Wallet.objects.get(user=self.request.user)
         context["activities"] = Issue.objects.filter(user=self.object, hunt=None).exclude(
-            Q(is_hidden=True) & ~Q(user_id=self.request.user.id))[0:10]
+            Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
+        )[0:10]
         context["profile_form"] = UserProfileForm()
-        context["total_open"] = Issue.objects.filter(
-            user=self.object, status="open"
-        ).count()
+        context["total_open"] = Issue.objects.filter(user=self.object, status="open").count()
         context["user_details"] = UserProfile.objects.get(user=self.object)
-        context["total_closed"] = Issue.objects.filter(
-            user=self.object, status="closed"
-        ).count()
+        context["total_closed"] = Issue.objects.filter(user=self.object, status="closed").count()
         context["current_month"] = datetime.now().month
         context["graph"] = (
             Issue.objects.filter(user=self.object, hunt=None)
@@ -1110,8 +1391,7 @@ class UserProfileDetailsView(DetailView):
         for i in range(0, 7):
             context["bug_type_" + str(i)] = Issue.objects.filter(
                 user=self.object, hunt=None, label=str(i)
-            ).exclude(
-            Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
+            ).exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
 
         arr = []
         allFollowers = user.userprofile.follower.all()
@@ -1133,9 +1413,7 @@ class UserProfileDetailsView(DetailView):
 
     @method_decorator(login_required)
     def post(self, request, *args, **kwargs):
-        form = UserProfileForm(
-            request.POST, request.FILES, instance=request.user.userprofile
-        )
+        form = UserProfileForm(request.POST, request.FILES, instance=request.user.userprofile)
         if form.is_valid():
             form.save()
         return redirect(reverse("profile", kwargs={"slug": kwargs.get("slug")}))
@@ -1143,6 +1421,7 @@ class UserProfileDetailsView(DetailView):
 
 def delete_issue(request, id):
     try:
+        # TODO: Refactor this for a direct query instead of looping through all tokens
         for token in Token.objects.all():
             if request.POST["token"] == token.key:
                 request.user = User.objects.get(id=token.user_id)
@@ -1150,23 +1429,28 @@ def delete_issue(request, id):
     except:
         tokenauth = False
     issue = Issue.objects.get(id=id)
+    if request.user.is_superuser or request.user == issue.user or tokenauth:
+        screenshots = issue.screenshots.all()
+        for screenshot in screenshots:
+            screenshot.delete()
     if request.user.is_superuser or request.user == issue.user:
         issue.delete()
         messages.success(request, "Issue deleted")
-    if tokenauth == True:
+    if tokenauth:
         return JsonResponse("Deleted", safe=False)
     else:
         return redirect("/")
-    
+
+
 def remove_user_from_issue(request, id):
-    tokenauth = False  
+    tokenauth = False
     try:
         for token in Token.objects.all():
             if request.POST["token"] == token.key:
                 request.user = User.objects.get(id=token.user_id)
                 tokenauth = True
     except:
-        pass 
+        pass
 
     issue = Issue.objects.get(id=id)
     if request.user.is_superuser or request.user == issue.user:
@@ -1187,24 +1471,27 @@ class DomainDetailView(ListView):
 
     def get_context_data(self, *args, **kwargs):
         context = super(DomainDetailView, self).get_context_data(*args, **kwargs)
-        context["domain"] = get_object_or_404(Domain, name=self.kwargs["slug"])
+        # remove any arguments from the slug
+        self.kwargs["slug"] = self.kwargs["slug"].split("?")[0]
+        domain = get_object_or_404(Domain, name=self.kwargs["slug"])
+        context["domain"] = domain
 
         parsed_url = urlparse("http://" + self.kwargs["slug"])
 
-        open_issue = Issue.objects.filter(
-            domain__name__contains=self.kwargs["slug"]
-        ).filter(status="open", hunt=None).exclude(
-            Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
-        close_issue = Issue.objects.filter(
-            domain__name__contains=self.kwargs["slug"]
-        ).filter(status="closed", hunt=None).exclude(
-            Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
+        open_issue = (
+            Issue.objects.filter(domain__name__contains=self.kwargs["slug"])
+            .filter(status="open", hunt=None)
+            .exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
+        )
+        close_issue = (
+            Issue.objects.filter(domain__name__contains=self.kwargs["slug"])
+            .filter(status="closed", hunt=None)
+            .exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
+        )
         if self.request.user.is_authenticated:
             context["wallet"] = Wallet.objects.get(user=self.request.user)
 
         context["name"] = parsed_url.netloc.split(".")[-2:][0].title()
-
-        
 
         paginator = Paginator(open_issue, 10)
         page = self.request.GET.get("open")
@@ -1251,6 +1538,8 @@ class DomainDetailView(ListView):
             .annotate(c=Count("label"))
             .order_by()
         )
+        context["twitter_url"] = "https://twitter.com/%s" % domain.get_or_set_x_url(domain.get_name)
+
         return context
 
 
@@ -1259,10 +1548,10 @@ class StatsDetailView(TemplateView):
 
     def get_context_data(self, *args, **kwargs):
         context = super(StatsDetailView, self).get_context_data(*args, **kwargs)
-        
+
         response = requests.get(settings.EXTENSION_URL)
         soup = BeautifulSoup(response.text)
-        
+
         stats = ""
         for item in soup.findAll("span", {"class": "e-f-ih"}):
             stats = item.attrs["title"]
@@ -1285,9 +1574,7 @@ class StatsDetailView(TemplateView):
             .annotate(c=Count("id"))
             .order_by()
         )
-        context["pie_chart"] = (
-            Issue.objects.values("label").annotate(c=Count("label")).order_by()
-        )
+        context["pie_chart"] = Issue.objects.values("label").annotate(c=Count("label")).order_by()
         return context
 
 
@@ -1299,10 +1586,12 @@ class AllIssuesView(ListView):
         username = self.request.GET.get("user")
         if username is None:
             self.activities = Issue.objects.filter(hunt=None).exclude(
-                Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
+                Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
+            )
         else:
-            self.activities = Issue.objects.filter(user__username=username,
-            hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
+            self.activities = Issue.objects.filter(user__username=username, hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
+            )
         return self.activities
 
     def get_context_data(self, *args, **kwargs):
@@ -1323,7 +1612,9 @@ class AllIssuesView(ListView):
         context["user"] = self.request.GET.get("user")
         context["activity_screenshots"] = {}
         for activity in self.activities:
-           context["activity_screenshots"][activity] = IssueScreenshot.objects.filter(issue=activity).first()
+            context["activity_screenshots"][activity] = IssueScreenshot.objects.filter(
+                issue=activity
+            ).first()
         return context
 
 
@@ -1358,16 +1649,16 @@ class SpecificIssuesView(ListView):
 
         if username is None:
             self.activities = Issue.objects.filter(hunt=None).exclude(
-                Q(is_hidden=True) & ~Q(user_id = self.request.user.id))
+                Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
+            )
         elif statu != "none":
             self.activities = Issue.objects.filter(
                 user__username=username, status=statu, hunt=None
-            ).exclude(Q(is_hidden=True) & ~Q(
-                user_id = self.request.user.id))
+            ).exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
         else:
             self.activities = Issue.objects.filter(
                 user__username=username, label=query, hunt=None
-            ).exclude(Q(is_hidden=True) & ~Q(user_id = self.request.user.id))
+            ).exclude(Q(is_hidden=True) & ~Q(user_id=self.request.user.id))
         return self.activities
 
     def get_context_data(self, *args, **kwargs):
@@ -1389,82 +1680,72 @@ class SpecificIssuesView(ListView):
         context["label"] = self.request.GET.get("label")
         return context
 
-class LeaderboardBase():
-    '''
-        get:
-            1) ?monthly=true will give list of winners for current month
-            2) ?year=2022 will give list of winner of every month from month 1-12 else None
 
-    '''      
-    def get_leaderboard(self,month=None,year=None,api=False):
-        '''
-            all user scores for specified month and year
-        '''
-        
+class LeaderboardBase:
+    """
+    get:
+        1) ?monthly=true will give list of winners for current month
+        2) ?year=2022 will give list of winner of every month from month 1-12 else None
+
+    """
+
+    def get_leaderboard(self, month=None, year=None, api=False):
+        """
+        all user scores for specified month and year
+        """
+
         data = User.objects
 
         if year and not month:
             data = data.filter(points__created__year=year)
 
         if year and month:
-            data = data.filter(
-                Q(points__created__year=year) &
-                Q(points__created__month=month)
-                )
+            data = data.filter(Q(points__created__year=year) & Q(points__created__month=month))
 
-        
         data = (
-                    data
-                    .annotate(total_score=Sum('points__score'))
-                    .order_by('-total_score')
-                    .filter(
-                        total_score__gt=0,
-                    )
-                )
-        if api:
-            return data.values('id','username','total_score')
-
-        return data
-    
-
-    def current_month_leaderboard(self,api=False):
-        '''
-            leaderboard which includes current month users scores
-        '''
-        return (
-            self.get_leaderboard(
-                month=int(datetime.now().month),
-                year=int(datetime.now().year),
-                api=api
+            data.annotate(total_score=Sum("points__score"))
+            .order_by("-total_score")
+            .filter(
+                total_score__gt=0,
             )
         )
+        if api:
+            return data.values("id", "username", "total_score")
 
-    def monthly_year_leaderboard(self,year,api=False):
+        return data
 
-        '''
-            leaderboard which includes current year top user from each month
-        '''
+    def current_month_leaderboard(self, api=False):
+        """
+        leaderboard which includes current month users scores
+        """
+        return self.get_leaderboard(
+            month=int(datetime.now().month), year=int(datetime.now().year), api=api
+        )
+
+    def monthly_year_leaderboard(self, year, api=False):
+        """
+        leaderboard which includes current year top user from each month
+        """
 
         monthly_winner = []
 
         # iterating over months 1-12
-        for month in range(1,13):
-            month_winner = self.get_leaderboard(month,year,api).first()
+        for month in range(1, 13):
+            month_winner = self.get_leaderboard(month, year, api).first()
             monthly_winner.append(month_winner)
-        
+
         return monthly_winner
 
-class GlobalLeaderboardView(LeaderboardBase,ListView):
 
-    '''
-        Returns: All users:score data in descending order 
-    '''
+class GlobalLeaderboardView(LeaderboardBase, ListView):
+    """
+    Returns: All users:score data in descending order
+    """
 
-    
     model = User
     template_name = "leaderboard_global.html"
 
-    def get_context_data(self, *args, **kwargs):      
+    def get_context_data(self, *args, **kwargs):
         context = super(GlobalLeaderboardView, self).get_context_data(*args, **kwargs)
 
         if self.request.user.is_authenticated:
@@ -1473,17 +1754,15 @@ class GlobalLeaderboardView(LeaderboardBase,ListView):
         return context
 
 
-class EachmonthLeaderboardView(LeaderboardBase,ListView):
-
-    '''
-        Returns: Grouped user:score data in months for current year
-    '''
+class EachmonthLeaderboardView(LeaderboardBase, ListView):
+    """
+    Returns: Grouped user:score data in months for current year
+    """
 
     model = User
     template_name = "leaderboard_eachmonth.html"
 
     def get_context_data(self, *args, **kwargs):
-        
         context = super(EachmonthLeaderboardView, self).get_context_data(*args, **kwargs)
 
         if self.request.user.is_authenticated:
@@ -1491,39 +1770,50 @@ class EachmonthLeaderboardView(LeaderboardBase,ListView):
 
         year = self.request.GET.get("year")
 
-        if not year: year = datetime.now().year
+        if not year:
+            year = datetime.now().year
 
-        if isinstance(year,str) and not year.isdigit():
+        if isinstance(year, str) and not year.isdigit():
             raise Http404(f"Invalid query passed | Year:{year}")
-        
+
         year = int(year)
 
         leaderboard = self.monthly_year_leaderboard(year)
         month_winners = []
 
-        months = ["January","February","March","April","May","June","July","August","September","October","Novermber","December"]
+        months = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "Novermber",
+            "December",
+        ]
 
-        for month_indx,usr in enumerate(leaderboard):
-            
-            
-            month_winner = {"user":usr,"month":months[month_indx]}
+        for month_indx, usr in enumerate(leaderboard):
+            month_winner = {"user": usr, "month": months[month_indx]}
             month_winners.append(month_winner)
 
         context["leaderboard"] = month_winners
 
         return context
 
-class SpecificMonthLeaderboardView(LeaderboardBase,ListView):
 
-    '''
-        Returns: leaderboard for filtered month and year requested in the query 
-    '''
+class SpecificMonthLeaderboardView(LeaderboardBase, ListView):
+    """
+    Returns: leaderboard for filtered month and year requested in the query
+    """
 
     model = User
     template_name = "leaderboard_specific_month.html"
 
     def get_context_data(self, *args, **kwargs):
-       
         context = super(SpecificMonthLeaderboardView, self).get_context_data(*args, **kwargs)
 
         if self.request.user.is_authenticated:
@@ -1532,21 +1822,23 @@ class SpecificMonthLeaderboardView(LeaderboardBase,ListView):
         month = self.request.GET.get("month")
         year = self.request.GET.get("year")
 
-        if not month: month = datetime.now().month
-        if not year: year = datetime.now().year
+        if not month:
+            month = datetime.now().month
+        if not year:
+            year = datetime.now().year
 
-        if isinstance(month,str) and not month.isdigit():
+        if isinstance(month, str) and not month.isdigit():
             raise Http404(f"Invalid query passed | Month:{month}")
-        if isinstance(year,str) and not year.isdigit():
+        if isinstance(year, str) and not year.isdigit():
             raise Http404(f"Invalid query passed | Year:{year}")
-        
+
         month = int(month)
         year = int(year)
 
-        if not (month>=1 and month<=12):
+        if not (month >= 1 and month <= 12):
             raise Http404(f"Invalid query passed | Month:{month}")
 
-        context["leaderboard"] = self.get_leaderboard(month,year,api=False)
+        context["leaderboard"] = self.get_leaderboard(month, year, api=False)
         return context
 
 
@@ -1556,21 +1848,23 @@ class ScoreboardView(ListView):
     paginate_by = 20
 
     def get_context_data(self, *args, **kwargs):
-        context = super(ScoreboardView, self).get_context_data(*args, **kwargs)
-        companies = sorted(Domain.objects.all(), key=lambda t: t.open_issues.count(), reverse = True)
+        context = super().get_context_data(*args, **kwargs)
 
-        #companies = Domain.objects.all().order_by("-open_issues")
-        paginator = Paginator(companies, self.paginate_by)
+        # Annotate each domain with the count of open issues
+        annotated_domains = Domain.objects.annotate(
+            open_issues_count=Count("open_issues")
+        ).order_by("-open_issues_count")
+
+        paginator = Paginator(annotated_domains, self.paginate_by)
         page = self.request.GET.get("page")
 
-        if self.request.user.is_authenticated:
-            context["wallet"] = Wallet.objects.get(user=self.request.user)
         try:
             scoreboard_paginated = paginator.page(page)
         except PageNotAnInteger:
             scoreboard_paginated = paginator.page(1)
         except EmptyPage:
             scoreboard_paginated = paginator.page(paginator.num_pages)
+
         context["scoreboard"] = scoreboard_paginated
         context["user"] = self.request.GET.get("user")
         return context
@@ -1599,10 +1893,9 @@ def search(request, template="search.html"):
         context = {
             "query": query,
             "type": stype,
-            "issues": Issue.objects.filter(Q(description__icontains=query),
-             hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[
-                0:20
-            ],
+            "issues": Issue.objects.filter(Q(description__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )[0:20],
         }
     elif stype == "domain":
         context = {
@@ -1614,9 +1907,7 @@ def search(request, template="search.html"):
         context = {
             "query": query,
             "type": stype,
-            "users": UserProfile.objects.filter(
-                Q(user__username__icontains=query)
-            )
+            "users": UserProfile.objects.filter(Q(user__username__icontains=query))
             .annotate(total_score=Sum("user__points__score"))
             .order_by("-total_score")[0:20],
         }
@@ -1624,8 +1915,9 @@ def search(request, template="search.html"):
         context = {
             "query": query,
             "type": stype,
-            "issues": Issue.objects.filter(Q(label__icontains=query),
-            hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[0:20],
+            "issues": Issue.objects.filter(Q(label__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )[0:20],
         }
 
     if request.user.is_authenticated:
@@ -1654,11 +1946,13 @@ def search_issues(request, template="search.html"):
         query = query[6:]
     if stype == "issue" or stype is None:
         if request.user.is_anonymous:
-            issues = Issue.objects.filter(Q(description__icontains=query),
-            hunt=None).exclude(Q(is_hidden=True))[0:20]
-        else :
-            issues = Issue.objects.filter(Q(description__icontains=query),
-            hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[0:20]
+            issues = Issue.objects.filter(Q(description__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True)
+            )[0:20]
+        else:
+            issues = Issue.objects.filter(Q(description__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )[0:20]
 
         context = {
             "query": query,
@@ -1669,31 +1963,28 @@ def search_issues(request, template="search.html"):
         context = {
             "query": query,
             "type": stype,
-            "issues": Issue.objects.filter(Q(domain__name__icontains=query),
-            hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[
-                0:20
-            ],
+            "issues": Issue.objects.filter(Q(domain__name__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )[0:20],
         }
     if stype == "user" or stype is None:
         context = {
             "query": query,
             "type": stype,
-            "issues": Issue.objects.filter(Q(user__username__icontains=query),
-            hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[
-                0:20
-            ],
+            "issues": Issue.objects.filter(Q(user__username__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )[0:20],
         }
 
     if stype == "label" or stype is None:
         context = {
             "query": query,
             "type": stype,
-            "issues": Issue.objects.filter(Q(label__icontains=query),
-            hunt=None).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))[
-                0:20
-            ],
+            "issues": Issue.objects.filter(Q(label__icontains=query), hunt=None).exclude(
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )[0:20],
         }
-        
+
     if request.user.is_authenticated:
         context["wallet"] = Wallet.objects.get(user=request.user)
     issues = serializers.serialize("json", context["issues"])
@@ -1703,7 +1994,7 @@ def search_issues(request, template="search.html"):
 
 class HuntCreate(CreateView):
     model = Hunt
-    fields = ["url", "logo", "name", "description","prize", "plan"]
+    fields = ["url", "logo", "name", "description", "prize", "plan"]
     template_name = "hunt.html"
 
     def form_valid(self, form):
@@ -1711,8 +2002,8 @@ class HuntCreate(CreateView):
         self.object.user = self.request.user
 
         domain, created = Domain.objects.get_or_create(
-            name=self.request.POST.get('url').replace("www.", ""),
-            defaults={"url": "http://" + self.request.POST.get('url').replace("www.", "")},
+            name=self.request.POST.get("url").replace("www.", ""),
+            defaults={"url": "http://" + self.request.POST.get("url").replace("www.", "")},
         )
         self.object.domain = domain
 
@@ -1720,17 +2011,24 @@ class HuntCreate(CreateView):
         return super(HuntCreate, self).form_valid(form)
 
     def get_success_url(self):
-        
         # return reverse('start_hunt')
 
         if self.request.POST.get("plan") == "Ant":
-            return "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=TSZ84RQZ8RKKC"
+            return (
+                "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=TSZ84RQZ8RKKC"
+            )
         if self.request.POST.get("plan") == "Wasp":
-            return "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=E3EELQQ6JLXKY"
+            return (
+                "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=E3EELQQ6JLXKY"
+            )
         if self.request.POST.get("plan") == "Scorpion":
-            return "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=9R3LPM3ZN8KCC"
+            return (
+                "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=9R3LPM3ZN8KCC"
+            )
         return "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=HH7MNY6KJGZFW"
 
+
+# TODO: REMOVE after _3 is ready
 class IssueView(DetailView):
     model = Issue
     slug_field = "id"
@@ -1750,9 +2048,7 @@ class IssueView(DetailView):
         try:
             if self.request.user.is_authenticated:
                 try:
-                    objectget = IP.objects.get(
-                        user=self.request.user, issuenumber=self.object.id
-                    )
+                    objectget = IP.objects.get(user=self.request.user, issuenumber=self.object.id)
                     self.object.save()
                 except:
                     ipdetails.save()
@@ -1764,12 +2060,15 @@ class IssueView(DetailView):
                         address=get_client_ip(request), issuenumber=self.object.id
                     )
                     self.object.save()
-                except:
+                except Exception as e:
+                    print(e)
+                    messages.error(self.request, "That issue was not found 2." + str(e))
                     ipdetails.save()
                     self.object.views = (self.object.views or 0) + 1
                     self.object.save()
-        except:
-            messages.error(self.request, "That issue was not found.")
+        except Exception as e:
+            print(e)
+            messages.error(self.request, "That issue was not found 1." + str(e))
             return redirect("/")
         return super(IssueView, self).get(request, *args, **kwargs)
 
@@ -1789,9 +2088,7 @@ class IssueView(DetailView):
 
         if self.request.user.is_authenticated:
             context["wallet"] = Wallet.objects.get(user=self.request.user)
-        context["issue_count"] = Issue.objects.filter(
-            url__contains=self.object.domain_name
-        ).count()
+        context["issue_count"] = Issue.objects.filter(url__contains=self.object.domain_name).count()
         context["all_comment"] = self.object.comments.all
         context["all_users"] = User.objects.all()
         context["likes"] = UserProfile.objects.filter(issue_upvoted=self.object).count()
@@ -1825,6 +2122,7 @@ def flag_issue(request, issue_pk):
     context["flags"] = total_flag_votes
     return render(request, "_flags.html", context)
 
+
 def IssueEdit(request):
     if request.method == "POST":
         issue = Issue.objects.get(pk=request.POST.get("issue_pk"))
@@ -1849,6 +2147,7 @@ def IssueEdit(request):
             return HttpResponse("Unauthorised")
     else:
         return HttpResponse("POST ONLY")
+
 
 def get_email_from_domain(domain_name):
     new_urls = deque(["http://" + domain_name])
@@ -1880,11 +2179,7 @@ def get_email_from_domain(domain_name):
                 link = base_url + link
             elif not link.startswith("http"):
                 link = path + link
-            if (
-                not link in new_urls
-                and not link in processed_urls
-                and link.find(domain_name) > 0
-            ):
+            if link not in new_urls and link not in processed_urls and link.find(domain_name) > 0:
                 new_urls.append(link)
 
     for email in emails:
@@ -1906,7 +2201,7 @@ class InboundParseWebhookView(View):
                 if event.get("event") == "click":
                     domain.clicks = int(domain.clicks or 0) + 1
                 domain.save()
-            except Exception as e:
+            except Exception:
                 pass
 
         return JsonResponse({"detail": "Inbound Sendgrid Webhook recieved"})
@@ -1976,9 +2271,7 @@ def UpdateIssue(request):
         mailer = settings.EMAIL_TO_STRING
         email_to = issue.user.email
         send_mail(subject, msg_plain, mailer, [email_to], html_message=msg_html)
-        send_mail(
-            subject, msg_plain, mailer, [issue.domain.email], html_message=msg_html
-        )
+        send_mail(subject, msg_plain, mailer, [issue.domain.email], html_message=msg_html)
         issue.save()
         return HttpResponse("Updated")
 
@@ -1992,7 +2285,6 @@ def assign_issue_to_user(request, user, **kwargs):
     created = request.session.get("created")
     domain_id = request.session.get("domain")
     if issue_id and domain_id:
-
         try:
             del request.session["issue"]
             del request.session["domain"]
@@ -2011,46 +2303,6 @@ def assign_issue_to_user(request, user, **kwargs):
         assigner.request = request
         assigner.process_issue(user, issue, created, domain)
 
-
-class CreateInviteFriend(CreateView):
-    template_name = "invite_friend.html"
-    model = InviteFriend
-    form_class = FormInviteFriend
-    success_url = reverse_lazy("invite_friend")
-
-    def form_valid(self, form):
-        from django.conf import settings
-        from django.contrib.sites.shortcuts import get_current_site
-
-        instance = form.save(commit=False)
-        instance.sender = self.request.user
-        instance.save()
-
-        site = get_current_site(self.request)
-
-        mail_status = send_mail(
-            "Inivtation to {site} from {user}".format(
-                site=site.name, user=self.request.user.username
-            ),
-            "You have been invited by {user} to join {site} community.".format(
-                user=self.request.user.username, site=site.name
-            ),
-            settings.DEFAULT_FROM_EMAIL,
-            [instance.recipient],
-        )
-
-        if (
-            mail_status
-            and InviteFriend.objects.filter(sender=self.request.user).count() == 2
-        ):
-            Points.objects.create(user=self.request.user, score=1)
-            InviteFriend.objects.filter(sender=self.request.user).delete()
-
-        messages.success(
-            self.request,
-            "An email has been sent to your friend. Keep inviting your friends and get points!",
-        )
-        return HttpResponseRedirect(self.success_url)
 
 @login_required(login_url="/accounts/login")
 def follow_user(request, user):
@@ -2081,6 +2333,7 @@ def follow_user(request, user):
         return HttpResponse("Success")
 
 
+# TODO: remove after _3 is ready
 @login_required(login_url="/accounts/login")
 def like_issue(request, issue_pk):
     context = {}
@@ -2143,7 +2396,7 @@ def dislike_issue(request, issue_pk):
 
     if userprof in UserProfile.objects.filter(issue_upvoted=issue):
         userprof.issue_upvoted.remove(issue)
-    
+
     if userprof in UserProfile.objects.filter(issue_downvoted=issue):
         userprof.issue_downvoted.remove(issue)
     else:
@@ -2196,7 +2449,7 @@ def get_client_ip(request):
 
 
 def get_score(request):
-    users = list()
+    users = []
     temp_users = (
         User.objects.annotate(total_score=Sum("points__score"))
         .order_by("-total_score")
@@ -2204,25 +2457,15 @@ def get_score(request):
     )
     rank_user = 1
     for each in temp_users.all():
-        temp = dict()
+        temp = {}
         temp["rank"] = rank_user
         temp["id"] = each.id
         temp["User"] = each.username
-        temp["score"] = Points.objects.filter(user=each.id).aggregate(
-            total_score=Sum("score")
-        )
-        temp["image"] = list(
-            UserProfile.objects.filter(user=each.id).values("user_avatar")
-        )[0]
-        temp["title_type"] = list(
-            UserProfile.objects.filter(user=each.id).values("title")
-        )[0]
-        temp["follows"] = list(
-            UserProfile.objects.filter(user=each.id).values("follows")
-        )[0]
-        temp["savedissue"] = list(
-            UserProfile.objects.filter(user=each.id).values("issue_saved")
-        )[0]
+        temp["score"] = Points.objects.filter(user=each.id).aggregate(total_score=Sum("score"))
+        temp["image"] = list(UserProfile.objects.filter(user=each.id).values("user_avatar"))[0]
+        temp["title_type"] = list(UserProfile.objects.filter(user=each.id).values("title"))[0]
+        temp["follows"] = list(UserProfile.objects.filter(user=each.id).values("follows"))[0]
+        temp["savedissue"] = list(UserProfile.objects.filter(user=each.id).values("issue_saved"))[0]
         rank_user = rank_user + 1
         users.append(temp)
     return JsonResponse(users, safe=False)
@@ -2235,12 +2478,11 @@ def comment_on_issue(request, issue_pk):
         raise Http404("Issue does not exist")
     issue = Issue.objects.filter(pk=issue_pk).first()
 
-    if request.method == "POST" and isinstance(request.user,User):
+    if request.method == "POST" and isinstance(request.user, User):
+        comment = request.POST.get("comment", "")
+        replying_to_input = request.POST.get("replying_to_input", "").split("#")
 
-        comment = request.POST.get("comment","")
-        replying_to_input = request.POST.get("replying_to_input","").split("#")
-        
-        if issue == None:
+        if issue is None:
             Http404("Issue does not exist, cannot comment")
 
         if len(replying_to_input) == 2:
@@ -2249,63 +2491,67 @@ def comment_on_issue(request, issue_pk):
 
             parent_comment = Comment.objects.filter(pk=replying_to_comment_id).first()
 
-            if parent_comment == None:
-                messages.error(request,"Parent comment doesn't exist.")
+            if parent_comment is None:
+                messages.error(request, "Parent comment doesn't exist.")
                 return redirect(f"/issue2/{issue_pk}")
 
             Comment.objects.create(
-                parent = parent_comment,
-                issue = issue,
-                author = request.user.username,
-                author_fk = request.user.userprofile,
-                author_url = f"profile/{request.user.username}/",
-                text = comment
+                parent=parent_comment,
+                issue=issue,
+                author=request.user.username,
+                author_fk=request.user.userprofile,
+                author_url=f"profile/{request.user.username}/",
+                text=comment,
             )
 
         else:
             Comment.objects.create(
-                issue = issue,
-                author = request.user.username,
-                author_fk = request.user.userprofile,
-                author_url = f"profile/{request.user.username}/",
-                text = comment
+                issue=issue,
+                author=request.user.username,
+                author_fk=request.user.userprofile,
+                author_url=f"profile/{request.user.username}/",
+                text=comment,
             )
-
 
     context = {
         "all_comment": Comment.objects.filter(issue__id=issue_pk).order_by("-created_date"),
-        "object": issue
+        "object": issue,
     }
 
-    return render(request, "comments2.html",context)
+    return render(request, "comments2.html", context)
 
-# get issue and comment id from url 
+
+# get issue and comment id from url
 def update_comment(request, issue_pk, comment_pk):
     issue = Issue.objects.filter(pk=issue_pk).first()
     comment = Comment.objects.filter(pk=comment_pk).first()
-    if request.method == "POST" and isinstance(request.user,User):
-
-        comment.text = request.POST.get("comment","")
+    if request.method == "POST" and isinstance(request.user, User):
+        comment.text = request.POST.get("comment", "")
         comment.save()
 
     context = {
         "all_comment": Comment.objects.filter(issue__id=issue_pk).order_by("-created_date"),
-        "object": issue
-    }
-    return render(request, "comments2.html",context)
-    
-def delete_comment(request):
-    int_issue_pk = int(request.POST['issue_pk'])
-    issue = Issue.objects.get(pk=int_issue_pk)
-    all_comment = Comment.objects.filter(issue=issue)
-    if request.method == "POST":
-        comment = Comment.objects.get(pk=int(request.POST['comment_pk']),author=request.user.username)
-        comment.delete()        
-    context = {
-        "all_comment": Comment.objects.filter(issue__id=int_issue_pk).order_by("-created_date"),
         "object": issue,
     }
     return render(request, "comments2.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def delete_comment(request):
+    int_issue_pk = int(request.POST["issue_pk"])
+    issue = get_object_or_404(Issue, pk=int_issue_pk)
+    if request.method == "POST":
+        comment = Comment.objects.get(
+            pk=int(request.POST["comment_pk"]), author=request.user.username
+        )
+        comment.delete()
+    context = {
+        "all_comments": Comment.objects.filter(issue__id=int_issue_pk).order_by("-created_date"),
+        "object": issue,
+    }
+    return render(request, "comments2.html", context)
+
+
 class CustomObtainAuthToken(ObtainAuthToken):
     def post(self, request, *args, **kwargs):
         response = super(CustomObtainAuthToken, self).post(request, *args, **kwargs)
@@ -2325,46 +2571,58 @@ def create_wallet(request):
     return JsonResponse("Created", safe=False)
 
 
+def monitor_create_view(request):
+    if request.method == "POST":
+        form = MonitorForm(request.POST)
+        if form.is_valid():
+            monitor = form.save(commit=False)
+            monitor.user = request.user  # Assuming you have a logged-in user
+            monitor.save()
+            # Redirect to a success page or render a success message
+    else:
+        form = MonitorForm()
+    return render(request, "Moniter.html", {"form": form})
+
+
 def issue_count(request):
     open_issue = Issue.objects.filter(status="open").count()
     close_issue = Issue.objects.filter(status="closed").count()
     return JsonResponse({"open": open_issue, "closed": close_issue}, safe=False)
 
-def contributors(request):
-    contributors_file_path = os.path.join(settings.BASE_DIR,"contributors.json")
 
-    with open(contributors_file_path,'r') as file:
+def contributors(request):
+    contributors_file_path = os.path.join(settings.BASE_DIR, "contributors.json")
+
+    with open(contributors_file_path, "r", encoding="utf-8", errors="replace") as file:
         content = file.read()
-    
+
     contributors_data = json.loads(content)
     return JsonResponse({"contributors": contributors_data})
 
 
 def get_scoreboard(request):
-    from PIL import Image
-
-    scoreboard = list()
+    scoreboard = []
     temp_domain = Domain.objects.all()
     for each in temp_domain:
-        temp = dict()
+        temp = {}
         temp["name"] = each.name
         temp["open"] = len(each.open_issues)
         temp["closed"] = len(each.closed_issues)
         temp["modified"] = each.modified
         temp["logo"] = each.logo
-        if each.top_tester == None:
+        if each.top_tester is None:
             temp["top"] = "None"
         else:
             temp["top"] = each.top_tester.username
         scoreboard.append(temp)
     paginator = Paginator(scoreboard, 10)
-    domain_list = list()
+    domain_list = []
     for data in scoreboard:
         domain_list.append(data)
     count = (Paginator(scoreboard, 10).count) % 10
     for i in range(10 - count):
         domain_list.append(None)
-    temp = dict()
+    temp = {}
     temp["name"] = None
     domain_list.append(temp)
     paginator = Paginator(domain_list, 10)
@@ -2378,8 +2636,6 @@ def get_scoreboard(request):
     return HttpResponse(
         json.dumps(domain.object_list, default=str), content_type="application/json"
     )
-
-
 
 
 def throw_error(request):
@@ -2479,14 +2735,10 @@ class CreateHunt(TemplateView):
                     )
                 else:
                     start_date = start_date - (
-                        timedelta(
-                            hours=int(int(offset) / 60), minutes=int(int(offset) % 60)
-                        )
+                        timedelta(hours=int(int(offset) / 60), minutes=int(int(offset) % 60))
                     )
                     end_date = end_date - (
-                        timedelta(
-                            hours=int(int(offset) / 60), minutes=int(int(offset) % 60)
-                        )
+                        timedelta(hours=int(int(offset) / 60), minutes=int(int(offset) % 60))
                     )
                 hunt.starts_on = start_date
                 hunt.prize_winner = Decimal(request.POST["prize_winner"])
@@ -2509,76 +2761,74 @@ class CreateHunt(TemplateView):
         except:
             return HttpResponse("failed")
 
-class ListHunts(TemplateView):
 
+class ListHunts(TemplateView):
     model = Hunt
     template_name = "hunt_list.html"
 
-
     def get(self, request, *args, **kwargs):
+        search = request.GET.get("search", "")
+        start_date = request.GET.get("start_date", None)
+        end_date = request.GET.get("end_date", None)
+        domain = request.GET.get("domain", None)
+        hunt_type = request.GET.get("hunt_type", "all")
 
-
-        search = request.GET.get("search","")
-        start_date = request.GET.get("start_date",None)
-        end_date = request.GET.get("end_date",None)
-        domain = request.GET.get("domain",None)
-        hunt_type = request.GET.get("hunt_type","all")
-
-        hunts = Hunt.objects.values(
-        'id',
-        'name',
-        'url',
-        'logo',
-        'starts_on',
-        'starts_on__day',
-        'starts_on__month',
-        'starts_on__year',
-        'end_on',
-        'end_on__day',
-        'end_on__month',
-        'end_on__year',
-        ).annotate(total_prize=Sum("huntprize__value")).all()
+        hunts = (
+            Hunt.objects.values(
+                "id",
+                "name",
+                "url",
+                "logo",
+                "starts_on",
+                "starts_on__day",
+                "starts_on__month",
+                "starts_on__year",
+                "end_on",
+                "end_on__day",
+                "end_on__month",
+                "end_on__year",
+            )
+            .annotate(total_prize=Sum("huntprize__value"))
+            .all()
+        )
 
         filtered_bughunts = {
             "all": hunts,
-            "ongoing": hunts.filter(result_published=False,is_published=True),
+            "ongoing": hunts.filter(result_published=False, is_published=True),
             "ended": hunts.filter(result_published=True),
-            "draft": hunts.filter(result_published=False,is_published=False)
-        } 
+            "draft": hunts.filter(result_published=False, is_published=False),
+        }
 
-        hunts = filtered_bughunts.get(hunt_type,hunts)
+        hunts = filtered_bughunts.get(hunt_type, hunts)
 
         if search.strip() != "":
             hunts = hunts.filter(Q(name__icontains=search))
 
-        if start_date != "" and start_date != None:
-            start_date = datetime.strptime(start_date,"%m/%d/%Y").strftime("%Y-%m-%d %H:%M")
+        if start_date != "" and start_date is not None:
+            start_date = datetime.strptime(start_date, "%m/%d/%Y").strftime("%Y-%m-%d %H:%M")
             hunts = hunts.filter(starts_on__gte=start_date)
-        
-        if end_date != "" and end_date != None:
-            end_date = datetime.strptime(end_date,"%m/%d/%Y").strftime("%Y-%m-%d %H:%M")
+
+        if end_date != "" and end_date is not None:
+            end_date = datetime.strptime(end_date, "%m/%d/%Y").strftime("%Y-%m-%d %H:%M")
             hunts = hunts.filter(end_on__gte=end_date)
 
-        if domain != "Select Domain" and domain != None:
+        if domain != "Select Domain" and domain is not None:
             domain = Domain.objects.filter(id=domain).first()
             hunts = hunts.filter(domain=domain)
-        
-        context = {
-            "hunts": hunts,
-            "domains": Domain.objects.values("id","name").all()
-        }
 
-        return render(request,self.template_name,context)
+        context = {"hunts": hunts, "domains": Domain.objects.values("id", "name").all()}
 
-    def post(self,request,*args,**kwargs):
+        return render(request, self.template_name, context)
 
-        request.GET.search = request.GET.get("search","")
-        request.GET.start_date = request.GET.get("start_date",'')
-        request.GET.end_date = request.GET.get("end_date",'')
-        request.GET.domain = request.GET.get("domain",'Select Domain')
-        request.GET.hunt_type = request.GET.get("type","all")
+    def post(self, request, *args, **kwargs):
+        request.GET.search = request.GET.get("search", "")
+        request.GET.start_date = request.GET.get("start_date", "")
+        request.GET.end_date = request.GET.get("end_date", "")
+        request.GET.domain = request.GET.get("domain", "Select Domain")
+        request.GET.hunt_type = request.GET.get("type", "all")
 
         return self.get(request)
+
 
 class DraftHunts(TemplateView):
     model = Hunt
@@ -2594,9 +2844,7 @@ class DraftHunts(TemplateView):
             if domain_admin.role == 0:
                 hunt = self.model.objects.filter(is_published=False)
             else:
-                hunt = self.model.objects.filter(
-                    is_published=False, domain=domain_admin.domain
-                )
+                hunt = self.model.objects.filter(is_published=False, domain=domain_admin.domain)
             context = {"hunts": hunt}
             return render(request, self.template_name, context)
         except:
@@ -2618,10 +2866,8 @@ class UpcomingHunts(TemplateView):
             if domain_admin.role == 0:
                 hunts = self.model.objects.filter(is_published=True)
             else:
-                hunts = self.model.objects.filter(
-                    is_published=True, domain=domain_admin.domain
-                )
-            new_hunt = list()
+                hunts = self.model.objects.filter(is_published=True, domain=domain_admin.domain)
+            new_hunt = []
             for hunt in hunts:
                 if ((hunt.starts_on - datetime.now(timezone.utc)).total_seconds()) > 0:
                     new_hunt.append(hunt)
@@ -2645,10 +2891,8 @@ class OngoingHunts(TemplateView):
             if domain_admin.role == 0:
                 hunts = self.model.objects.filter(is_published=True)
             else:
-                hunts = self.model.objects.filter(
-                    is_published=True, domain=domain_admin.domain
-                )
-            new_hunt = list()
+                hunts = self.model.objects.filter(is_published=True, domain=domain_admin.domain)
+            new_hunt = []
             for hunt in hunts:
                 if ((hunt.starts_on - datetime.now(timezone.utc)).total_seconds()) > 0:
                     new_hunt.append(hunt)
@@ -2672,10 +2916,8 @@ class PreviousHunts(TemplateView):
             if domain_admin.role == 0:
                 hunts = self.model.objects.filter(is_published=True)
             else:
-                hunts = self.model.objects.filter(
-                    is_published=True, domain=domain_admin.domain
-                )
-            new_hunt = list()
+                hunts = self.model.objects.filter(is_published=True, domain=domain_admin.domain)
+            new_hunt = []
             for hunt in hunts:
                 if ((hunt.starts_on - datetime.now(timezone.utc)).total_seconds()) > 0:
                     pass
@@ -2690,9 +2932,7 @@ class PreviousHunts(TemplateView):
 
     @method_decorator(login_required)
     def post(self, request, *args, **kwargs):
-        form = UserProfileForm(
-            request.POST, request.FILES, instance=request.user.userprofile
-        )
+        form = UserProfileForm(request.POST, request.FILES, instance=request.user.userprofile)
         if form.is_valid():
             form.save()
         return redirect(reverse("profile", kwargs={"slug": kwargs.get("slug")}))
@@ -2730,9 +2970,7 @@ class CompanySettings(TemplateView):
 
     @method_decorator(login_required)
     def post(self, request, *args, **kwargs):
-        form = UserProfileForm(
-            request.POST, request.FILES, instance=request.user.userprofile
-        )
+        form = UserProfileForm(request.POST, request.FILES, instance=request.user.userprofile)
         if form.is_valid():
             form.save()
         return redirect(reverse("profile", kwargs={"slug": kwargs.get("slug")}))
@@ -2754,9 +2992,7 @@ def update_role(request):
                     elif request.POST["role@" + value] == "9":
                         domain_admin.is_active = False
                     if request.POST["domain@" + value] != "":
-                        domain_admin.domain = Domain.objects.get(
-                            pk=request.POST["domain@" + value]
-                        )
+                        domain_admin.domain = Domain.objects.get(pk=request.POST["domain@" + value])
                     else:
                         domain_admin.domain = None
                     domain_admin.save()
@@ -2821,7 +3057,6 @@ def add_or_update_company(request):
         if not user.is_active:
             return HttpResponseRedirect("/")
         if request.method == "POST":
-
             domain_pk = request.POST["id"]
             company = Company.objects.get(pk=domain_pk)
             user = company.admin
@@ -2851,9 +3086,7 @@ def add_or_update_company(request):
             except:
                 company.is_active = False
             try:
-                company.subscription = Subscription.objects.get(
-                    name=request.POST["subscription"]
-                )
+                company.subscription = Subscription.objects.get(name=request.POST["subscription"])
             except:
                 pass
             try:
@@ -2930,9 +3163,7 @@ def add_or_update_domain(request):
 
 
 @login_required(login_url="/accounts/login")
-def company_dashboard_domain_detail(
-    request, pk, template="company_dashboard_domain_detail.html"
-):
+def company_dashboard_domain_detail(request, pk, template="company_dashboard_domain_detail.html"):
     user = request.user
     domain_admin = CompanyAdmin.objects.get(user=request.user)
     try:
@@ -2948,17 +3179,13 @@ def company_dashboard_domain_detail(
 
 
 @login_required(login_url="/accounts/login")
-def company_dashboard_hunt_detail(
-    request, pk, template="company_dashboard_hunt_detail.html"
-):
+def company_dashboard_hunt_detail(request, pk, template="company_dashboard_hunt_detail.html"):
     hunt = get_object_or_404(Hunt, pk=pk)
     return render(request, template, {"hunt": hunt})
 
 
 @login_required(login_url="/accounts/login")
-def company_dashboard_hunt_edit(
-    request, pk, template="company_dashboard_hunt_edit.html"
-):
+def company_dashboard_hunt_edit(request, pk, template="company_dashboard_hunt_edit.html"):
     if request.method == "GET":
         hunt = get_object_or_404(Hunt, pk=pk)
         domain_admin = CompanyAdmin.objects.get(user=request.user)
@@ -2990,9 +3217,7 @@ def company_dashboard_hunt_edit(
         if domain_admin.role == 1:
             if hunt.domain != domain_admin.domain:
                 return HttpResponse("failed")
-        hunt.domain = Domain.objects.get(
-            pk=(request.POST["domain"]).split("-")[0].replace(" ", "")
-        )
+        hunt.domain = Domain.objects.get(pk=(request.POST["domain"]).split("-")[0].replace(" ", ""))
         tzsign = 1
         offset = request.POST["tzoffset"]
         if int(offset) < 0:
@@ -3049,7 +3274,7 @@ def withdraw(request):
             stripe.api_key = settings.STRIPE_TEST_SECRET_KEY
             if wallet.account_id:
                 account = stripe.Account.retrieve(wallet.account_id)
-                if account.payouts_enabled == True:
+                if account.payouts_enabled:
                     balance = stripe.Balance.retrieve()
                     if balance.available[0].amount > payment.value * 100:
                         stripe.Transfer.create(
@@ -3083,9 +3308,7 @@ def withdraw(request):
                         + request.user.username,
                         type="account_onboarding",
                     )
-                    return JsonResponse(
-                        {"redirect": account_links.url, "status": "success"}
-                    )
+                    return JsonResponse({"redirect": account_links.url, "status": "success"})
             else:
                 account = stripe.Account.create(
                     type="express",
@@ -3100,9 +3323,7 @@ def withdraw(request):
                     + request.user.username,
                     type="account_onboarding",
                 )
-                return JsonResponse(
-                    {"redirect": account_links.url, "status": "success"}
-                )
+                return JsonResponse({"redirect": account_links.url, "status": "success"})
         return JsonResponse({"status": "error"})
 
 
@@ -3132,7 +3353,7 @@ def stripe_connected(request, username):
 
     stripe.api_key = settings.STRIPE_TEST_SECRET_KEY
     account = stripe.Account.retrieve(wallet.account_id)
-    if account.payouts_enabled == True:
+    if account.payouts_enabled:
         payment = Payment.objects.get(wallet=wallet, active=True)
         balance = stripe.Balance.retrieve()
         if balance.available[0].amount > payment.value * 100:
@@ -3161,7 +3382,6 @@ class JoinCompany(TemplateView):
 
     @method_decorator(login_required)
     def get(self, request, *args, **kwargs):
-
         wallet, created = Wallet.objects.get_or_create(user=request.user)
         context = {"wallet": wallet}
         return render(request, self.template_name, context)
@@ -3235,9 +3455,7 @@ def view_hunt(request, pk, template="view_hunt.html"):
     if ((hunt.starts_on - datetime.now(timezone.utc)).total_seconds()) > 0:
         hunt_active = False
         hunt_completed = False
-        time_remaining = humanize.naturaltime(
-            datetime.now(timezone.utc) - hunt.starts_on
-        )
+        time_remaining = humanize.naturaltime(datetime.now(timezone.utc) - hunt.starts_on)
     elif ((hunt.end_on - datetime.now(timezone.utc)).total_seconds()) < 0:
         hunt_active = False
         hunt_completed = True
@@ -3277,20 +3495,18 @@ def submit_bug(request, pk, template="hunt_submittion.html"):
             description = request.POST["description"]
             if url == "" or description == "":
                 issue_list = Issue.objects.filter(user=request.user, hunt=hunt).exclude(
-                    Q(is_hidden=True) & ~Q(user_id=request.user.id))
-                return render(
-                    request, template, {"hunt": hunt, "issue_list": issue_list}
+                    Q(is_hidden=True) & ~Q(user_id=request.user.id)
                 )
+                return render(request, template, {"hunt": hunt, "issue_list": issue_list})
             parsed_url = urlparse(url)
             if parsed_url.scheme == "":
                 url = "https://" + url
             parsed_url = urlparse(url)
             if parsed_url.netloc == "":
                 issue_list = Issue.objects.filter(user=request.user, hunt=hunt).exclude(
-                    Q(is_hidden=True) & ~Q(user_id=request.user.id))
-                return render(
-                    request, template, {"hunt": hunt, "issue_list": issue_list}
+                    Q(is_hidden=True) & ~Q(user_id=request.user.id)
                 )
+                return render(request, template, {"hunt": hunt, "issue_list": issue_list})
             label = request.POST["label"]
             if request.POST.get("file"):
                 if isinstance(request.POST.get("file"), six.string_types):
@@ -3323,9 +3539,7 @@ def submit_bug(request, pk, template="hunt_submittion.html"):
                         file_extension,
                     )
 
-                    request.FILES["screenshot"] = ContentFile(
-                        decoded_file, name=complete_file_name
-                    )
+                    request.FILES["screenshot"] = ContentFile(decoded_file, name=complete_file_name)
             issue = Issue()
             issue.label = label
             issue.url = url
@@ -3335,14 +3549,14 @@ def submit_bug(request, pk, template="hunt_submittion.html"):
                 issue.screenshot = request.FILES["screenshot"]
             except:
                 issue_list = Issue.objects.filter(user=request.user, hunt=hunt).exclude(
-                    Q(is_hidden=True) & ~Q(user_id=request.user.id))
-                return render(
-                    request, template, {"hunt": hunt, "issue_list": issue_list}
+                    Q(is_hidden=True) & ~Q(user_id=request.user.id)
                 )
+                return render(request, template, {"hunt": hunt, "issue_list": issue_list})
             issue.hunt = hunt
             issue.save()
             issue_list = Issue.objects.filter(user=request.user, hunt=hunt).exclude(
-                Q(is_hidden=True) & ~Q(user_id=request.user.id))
+                Q(is_hidden=True) & ~Q(user_id=request.user.id)
+            )
             return render(request, template, {"hunt": hunt, "issue_list": issue_list})
 
 
@@ -3355,12 +3569,15 @@ def hunt_results(request, pk, template="hunt_results.html"):
 @login_required(login_url="/accounts/login")
 def company_hunt_results(request, pk, template="company_hunt_results.html"):
     hunt = get_object_or_404(Hunt, pk=pk)
-    issues = Issue.objects.filter(hunt=hunt).exclude(Q(is_hidden=True) & ~Q(user_id=request.user.id))
+    issues = Issue.objects.filter(hunt=hunt).exclude(
+        Q(is_hidden=True) & ~Q(user_id=request.user.id)
+    )
     context = {}
     if request.method == "GET":
         context["hunt"] = get_object_or_404(Hunt, pk=pk)
         context["issues"] = Issue.objects.filter(hunt=hunt).exclude(
-            Q(is_hidden=True) & ~Q(user_id=request.user.id))
+            Q(is_hidden=True) & ~Q(user_id=request.user.id)
+        )
         if hunt.result_published:
             context["winner"] = Winner.objects.get(hunt=hunt)
         return render(request, template, context)
@@ -3428,9 +3645,7 @@ def company_hunt_results(request, pk, template="company_hunt_results.html"):
                     wallet.deposit(hunt.prize_runner)
                     wallet.save()
                 if winner.second_runner:
-                    wallet, created = Wallet.objects.get_or_create(
-                        user=winner.second_runner
-                    )
+                    wallet, created = Wallet.objects.get_or_create(user=winner.second_runner)
                     wallet.deposit(hunt.prize_second_runner)
                     wallet.save()
             winner.prize_distributed = True
@@ -3441,64 +3656,587 @@ def company_hunt_results(request, pk, template="company_hunt_results.html"):
             context["winner"] = winner
         context["hunt"] = get_object_or_404(Hunt, pk=pk)
         context["issues"] = Issue.objects.filter(hunt=hunt).exclude(
-            Q(is_hidden=True) & ~Q(user_id=request.user.id))
+            Q(is_hidden=True) & ~Q(user_id=request.user.id)
+        )
         return render(request, template, context)
 
 
 def handler404(request, exception):
-   return render(request, "404.html", {}, status=404)
+    return render(request, "404.html", {}, status=404)
+
 
 def handler500(request, exception=None):
-   return render(request, "500.html", {}, status=500)
+    return render(request, "500.html", {}, status=500)
 
-def contributors_view(request,*args,**kwargs):
 
-        
+def contributors_view(request, *args, **kwargs):
+    contributors_file_path = os.path.join(settings.BASE_DIR, "contributors.json")
 
-    contributors_file_path = os.path.join(settings.BASE_DIR,"contributors.json")
-
-    with open(contributors_file_path,'r') as file:
+    with open(contributors_file_path, "r", encoding="utf-8") as file:
         content = file.read()
-    
+
     contributors = json.loads(content)
 
-    contributor_id = request.GET.get("contributor",None)
+    contributor_id = request.GET.get("contributor", None)
 
     if contributor_id:
-        
-        contributor=None
+        contributor = None
         for i in contributors:
-            if str(i["id"])==contributor_id:
+            if str(i["id"]) == contributor_id:
                 contributor = i
-        
-        if contributor==None:
+
+        if contributor is None:
             return HttpResponseNotFound("Contributor not found")
-        
-        return render(request,"contributors_detail.html",context={"contributor":contributor})
 
+        return render(request, "contributors_detail.html", context={"contributor": contributor})
 
-    context = {
-        "contributors":contributors
-    }
+    context = {"contributors": contributors}
 
-    return render(request,"contributors.html",context=context)
+    return render(request, "contributors.html", context=context)
+
 
 def sponsor_view(request):
-    return render(request, "sponsor.html")
+    from bitcash.network import NetworkAPI
+
+    def get_bch_balance(address):
+        try:
+            balance_satoshis = NetworkAPI.get_balance(address)
+            balance_bch = balance_satoshis / 100000000  # Convert from satoshis to BCH
+            return balance_bch
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    # Example BCH address
+    bch_address = "bitcoincash:qr5yccf7j4dpjekyz3vpawgaarl352n7yv5d5mtzzc"
+
+    balance = get_bch_balance(bch_address)
+    if balance is not None:
+        print(f"Balance of {bch_address}: {balance} BCH")
+
+    return render(request, "sponsor.html", context={"balance": balance})
+
 
 def safe_redirect(request: HttpRequest):
-    http_referer = request.META.get('HTTP_REFERER')
+    http_referer = request.META.get("HTTP_REFERER")
     if http_referer:
         referer_url = urlparse(http_referer)
         # Check if the referer URL's host is the same as the site's host
         if referer_url.netloc == request.get_host():
             # Build a 'safe' version of the referer URL (without query string or fragment)
-            safe_url = urlunparse((referer_url.scheme, referer_url.netloc, referer_url.path, '', '', ''))
+            safe_url = urlunparse(
+                (referer_url.scheme, referer_url.netloc, referer_url.path, "", "", "")
+            )
             return redirect(safe_url)
     # Redirect to the fallback path if 'HTTP_REFERER' is not provided or is not safe
     # Build the fallback URL using the request's scheme and host
     fallback_url = f"{request.scheme}://{request.get_host()}/"
     return redirect(fallback_url)
+
+
+class DomainListView(ListView):
+    model = Domain
+    paginate_by = 20
+    template_name = "domain_list.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        domain = Domain.objects.all()
+
+        paginator = Paginator(domain, self.paginate_by)
+        page = self.request.GET.get("page")
+
+        try:
+            domain_paginated = paginator.page(page)
+        except PageNotAnInteger:
+            domain_paginated = paginator.page(1)
+        except EmptyPage:
+            domain_paginated = paginator.page(paginator.num_pages)
+
+        context["domain"] = domain_paginated
+        return context
+
+
+# TODO: Remove like_issue2 and like_issue, dislike_issue,dislike_issue2,flag_issue2,flag_issue after ready
+@login_required(login_url="/accounts/login")
+def flag_issue2(request, issue_pk):
+    context = {}
+    issue_pk = int(issue_pk)
+    issue = Issue.objects.get(pk=issue_pk)
+    userprof = UserProfile.objects.get(user=request.user)
+    if userprof in UserProfile.objects.filter(issue_flaged=issue):
+        userprof.issue_flaged.remove(issue)
+    else:
+        userprof.issue_flaged.add(issue)
+        issue_pk = issue.pk
+
+    userprof.save()
+    total_flag_votes = UserProfile.objects.filter(issue_flaged=issue).count()
+    context["object"] = issue
+    context["flags"] = total_flag_votes
+    return render(request, "includes/_flags2.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def like_issue2(request, issue_pk):
+    context = {}
+    issue_pk = int(issue_pk)
+    issue = get_object_or_404(Issue, pk=issue_pk)
+    userprof = UserProfile.objects.get(user=request.user)
+
+    if UserProfile.objects.filter(issue_downvoted=issue, user=request.user).exists():
+        userprof.issue_downvoted.remove(issue)
+    if UserProfile.objects.filter(issue_upvoted=issue, user=request.user).exists():
+        userprof.issue_upvoted.remove(issue)
+    else:
+        userprof.issue_upvoted.add(issue)
+        liked_user = issue.user
+        liker_user = request.user
+        issue_pk = issue.pk
+        msg_plain = render_to_string(
+            "email/issue_liked.txt",
+            {
+                "liker_user": liker_user.username,
+                "liked_user": liked_user.username,
+                "issue_pk": issue_pk,
+            },
+        )
+        msg_html = render_to_string(
+            "email/issue_liked.txt",
+            {
+                "liker_user": liker_user.username,
+                "liked_user": liked_user.username,
+                "issue_pk": issue_pk,
+            },
+        )
+
+        send_mail(
+            "Your issue got an upvote!!",
+            msg_plain,
+            settings.EMAIL_TO_STRING,
+            [liked_user.email],
+            html_message=msg_html,
+        )
+
+    total_votes = UserProfile.objects.filter(issue_upvoted=issue).count()
+    context["object"] = issue
+    context["likes"] = total_votes
+    return render(request, "includes/_likes2.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def dislike_issue2(request, issue_pk):
+    context = {}
+    issue_pk = int(issue_pk)
+    issue = get_object_or_404(Issue, pk=issue_pk)
+    userprof = UserProfile.objects.get(user=request.user)
+
+    if UserProfile.objects.filter(issue_upvoted=issue, user=request.user).exists():
+        userprof.issue_upvoted.remove(issue)
+    if UserProfile.objects.filter(issue_downvoted=issue, user=request.user).exists():
+        userprof.issue_downvoted.remove(issue)
+    else:
+        userprof.issue_downvoted.add(issue)
+    total_votes = UserProfile.objects.filter(issue_downvoted=issue).count()
+    context["object"] = issue
+    context["dislikes"] = total_votes
+    return render(request, "includes/_dislike2.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def flag_issue3(request, issue_pk):
+    context = {}
+    issue_pk = int(issue_pk)
+    issue = Issue.objects.get(pk=issue_pk)
+    userprof = UserProfile.objects.get(user=request.user)
+    if userprof in UserProfile.objects.filter(issue_flaged=issue):
+        userprof.issue_flaged.remove(issue)
+    else:
+        userprof.issue_flaged.add(issue)
+        issue_pk = issue.pk
+
+    userprof.save()
+    total_flag_votes = UserProfile.objects.filter(issue_flaged=issue).count()
+    context["object"] = issue
+    context["flags"] = total_flag_votes
+    context["isFlagged"] = UserProfile.objects.filter(
+        issue_flaged=issue, user=request.user
+    ).exists()
+    return render(request, "includes/_flags3.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def like_issue3(request, issue_pk):
+    context = {}
+    issue_pk = int(issue_pk)
+    issue = get_object_or_404(Issue, pk=issue_pk)
+    userprof = UserProfile.objects.get(user=request.user)
+
+    if UserProfile.objects.filter(issue_downvoted=issue, user=request.user).exists():
+        userprof.issue_downvoted.remove(issue)
+    if UserProfile.objects.filter(issue_upvoted=issue, user=request.user).exists():
+        userprof.issue_upvoted.remove(issue)
+    else:
+        userprof.issue_upvoted.add(issue)
+        liked_user = issue.user
+        liker_user = request.user
+        issue_pk = issue.pk
+        msg_plain = render_to_string(
+            "email/issue_liked.txt",
+            {
+                "liker_user": liker_user.username,
+                "liked_user": liked_user.username,
+                "issue_pk": issue_pk,
+            },
+        )
+        msg_html = render_to_string(
+            "email/issue_liked.txt",
+            {
+                "liker_user": liker_user.username,
+                "liked_user": liked_user.username,
+                "issue_pk": issue_pk,
+            },
+        )
+
+        send_mail(
+            "Your issue got an upvote!!",
+            msg_plain,
+            settings.EMAIL_TO_STRING,
+            [liked_user.email],
+            html_message=msg_html,
+        )
+
+    total_votes = UserProfile.objects.filter(issue_upvoted=issue).count()
+    context["object"] = issue
+    context["likes"] = total_votes
+    context["isLiked"] = UserProfile.objects.filter(issue_upvoted=issue, user=request.user).exists()
+    return render(request, "includes/_likes3.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def dislike_issue3(request, issue_pk):
+    context = {}
+    issue_pk = int(issue_pk)
+    issue = get_object_or_404(Issue, pk=issue_pk)
+    userprof = UserProfile.objects.get(user=request.user)
+
+    if UserProfile.objects.filter(issue_upvoted=issue, user=request.user).exists():
+        userprof.issue_upvoted.remove(issue)
+    if UserProfile.objects.filter(issue_downvoted=issue, user=request.user).exists():
+        userprof.issue_downvoted.remove(issue)
+    else:
+        userprof.issue_downvoted.add(issue)
+    total_votes = UserProfile.objects.filter(issue_downvoted=issue).count()
+    context["object"] = issue
+    context["dislikes"] = total_votes
+    context["isDisliked"] = UserProfile.objects.filter(
+        issue_downvoted=issue, user=request.user
+    ).exists()
+    return render(request, "includes/_dislikes3.html", context)
+
+
+@login_required(login_url="/accounts/login")
+def vote_count(request, issue_pk):
+    issue_pk = int(issue_pk)
+    issue = Issue.objects.get(pk=issue_pk)
+
+    total_upvotes = UserProfile.objects.filter(issue_upvoted=issue).count()
+    total_downvotes = UserProfile.objects.filter(issue_downvoted=issue).count()
+    return JsonResponse({"likes": total_upvotes, "dislikes": total_downvotes})
+
+
+@login_required(login_url="/accounts/login")
+def subscribe_to_domains(request, pk):
+    domain = Domain.objects.filter(pk=pk).first()
+    if domain is None:
+        return JsonResponse("ERROR", safe=False, status=400)
+
+    already_subscribed = request.user.userprofile.subscribed_domains.filter(pk=domain.id).exists()
+
+    if already_subscribed:
+        request.user.userprofile.subscribed_domains.remove(domain)
+        request.user.userprofile.save()
+        return JsonResponse("UNSUBSCRIBED", safe=False)
+
+    else:
+        request.user.userprofile.subscribed_domains.add(domain)
+        request.user.userprofile.save()
+        return JsonResponse("SUBSCRIBED", safe=False)
+
+
+class IssueView2(DetailView):
+    model = Issue
+    slug_field = "id"
+    template_name = "issue2.html"
+
+    def get(self, request, *args, **kwargs):
+        ipdetails = IP()
+        try:
+            id = int(self.kwargs["slug"])
+        except ValueError:
+            return HttpResponseNotFound("Invalid ID: ID must be an integer")
+
+        self.object = get_object_or_404(Issue, id=self.kwargs["slug"])
+        ipdetails.user = self.request.user
+        ipdetails.address = get_client_ip(request)
+        ipdetails.issuenumber = self.object.id
+        try:
+            if self.request.user.is_authenticated:
+                try:
+                    objectget = IP.objects.get(user=self.request.user, issuenumber=self.object.id)
+                    self.object.save()
+                except:
+                    ipdetails.save()
+                    self.object.views = (self.object.views or 0) + 1
+                    self.object.save()
+            else:
+                try:
+                    objectget = IP.objects.get(
+                        address=get_client_ip(request), issuenumber=self.object.id
+                    )
+                    self.object.save()
+                except:
+                    ipdetails.save()
+                    self.object.views = (self.object.views or 0) + 1
+                    self.object.save()
+        except Exception as e:
+            print(e)
+            # TODO: this is only an error for ipv6 currently and doesn't require us to redirect the user - we'll sort this out later
+            # messages.error(self.request, "That issue was not found."+str(e))
+            # return redirect("/")
+        return super(IssueView2, self).get(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super(IssueView2, self).get_context_data(**kwargs)
+        if self.object.user_agent:
+            user_agent = parse(self.object.user_agent)
+            context["browser_family"] = user_agent.browser.family
+            context["browser_version"] = user_agent.browser.version_string
+            context["os_family"] = user_agent.os.family
+            context["os_version"] = user_agent.os.version_string
+        context["users_score"] = list(
+            Points.objects.filter(user=self.object.user)
+            .aggregate(total_score=Sum("score"))
+            .values()
+        )[0]
+
+        if self.request.user.is_authenticated:
+            context["wallet"] = Wallet.objects.get(user=self.request.user)
+        context["issue_count"] = Issue.objects.filter(url__contains=self.object.domain_name).count()
+        context["all_comment"] = self.object.comments.all().order_by("-created_date")
+        context["all_users"] = User.objects.all()
+        context["likes"] = UserProfile.objects.filter(issue_upvoted=self.object).count()
+        context["likers"] = UserProfile.objects.filter(issue_upvoted=self.object)
+        context["flags"] = UserProfile.objects.filter(issue_flaged=self.object).count()
+        context["flagers"] = UserProfile.objects.filter(issue_flaged=self.object)
+        context["more_issues"] = (
+            Issue.objects.filter(user=self.object.user)
+            .exclude(id=self.object.id)
+            .values("id", "description", "markdown_description", "screenshots__image")
+            .order_by("views")[:4]
+        )
+        context["subscribed_to_domain"] = False
+        context["cve_id"] = self.object.cve_id
+        context["cve_score"] = self.object.cve_score
+
+        # TODO: fix this
+        # if isinstance(self.request.user, User):
+        #     if self.request.user.is_authenticated:
+        #         context["subscribed_to_domain"] = self.object.domain.user_subscribed_domains.filter(
+        #             pk=self.request.user.userprofile.id
+        #         ).exists()
+
+        if isinstance(self.request.user, User):
+            context["bookmarked"] = self.request.user.userprofile.issue_saved.filter(
+                pk=self.object.id
+            ).exists()
+
+        context["screenshots"] = IssueScreenshot.objects.filter(issue=self.object).all()
+
+        return context
+
+
+class IssueView3(DetailView):
+    model = Issue
+    slug_field = "id"
+    template_name = "issue3.html"
+
+    def get(self, request, *args, **kwargs):
+        ipdetails = IP()
+        try:
+            id = int(self.kwargs["slug"])
+        except ValueError:
+            return HttpResponseNotFound("Invalid ID: ID must be an integer")
+
+        self.object = get_object_or_404(Issue, id=self.kwargs["slug"])
+        ipdetails.user = self.request.user
+        ipdetails.address = get_client_ip(request)
+        ipdetails.issuenumber = self.object.id
+        try:
+            if self.request.user.is_authenticated:
+                try:
+                    objectget = IP.objects.get(user=self.request.user, issuenumber=self.object.id)
+                    self.object.save()
+                except:
+                    ipdetails.save()
+                    self.object.views = (self.object.views or 0) + 1
+                    self.object.save()
+            else:
+                try:
+                    objectget = IP.objects.get(
+                        address=get_client_ip(request), issuenumber=self.object.id
+                    )
+                    self.object.save()
+                except:
+                    ipdetails.save()
+                    self.object.views = (self.object.views or 0) + 1
+                    self.object.save()
+        except Exception as e:
+            print(e)
+            # TODO: this is only an error for ipv6 currently and doesn't require us to redirect the user - we'll sort this out later
+            # messages.error(self.request, "That issue was not found."+str(e))
+            # return redirect("/")
+        return super(IssueView3, self).get(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super(IssueView3, self).get_context_data(**kwargs)
+        if self.object.user_agent:
+            user_agent = parse(self.object.user_agent)
+            context["browser_family"] = user_agent.browser.family
+            context["browser_version"] = user_agent.browser.version_string
+            context["os_family"] = user_agent.os.family
+            context["os_version"] = user_agent.os.version_string
+        context["users_score"] = list(
+            Points.objects.filter(user=self.object.user)
+            .aggregate(total_score=Sum("score"))
+            .values()
+        )[0]
+
+        if self.request.user.is_authenticated:
+            context["wallet"] = Wallet.objects.get(user=self.request.user)
+            context["isLiked"] = UserProfile.objects.filter(
+                issue_upvoted=self.object, user=self.request.user
+            ).exists()
+            context["isDisliked"] = UserProfile.objects.filter(
+                issue_downvoted=self.object, user=self.request.user
+            ).exists()
+            context["isFlagged"] = UserProfile.objects.filter(
+                issue_flaged=self.object, user=self.request.user
+            ).exists()
+        context["issue_count"] = Issue.objects.filter(url__contains=self.object.domain_name).count()
+        context["all_comment"] = self.object.comments.all().order_by("-created_date")
+        context["all_users"] = User.objects.all()
+        context["likes"] = UserProfile.objects.filter(issue_upvoted=self.object).count()
+        context["dislikes"] = UserProfile.objects.filter(issue_downvoted=self.object).count()
+        context["likers"] = UserProfile.objects.filter(issue_upvoted=self.object).all()
+        context["flags"] = UserProfile.objects.filter(issue_flaged=self.object).count()
+        context["flagers"] = UserProfile.objects.filter(issue_flaged=self.object)
+        context["more_issues"] = (
+            Issue.objects.filter(user=self.object.user)
+            .exclude(id=self.object.id)
+            .values("id", "description", "markdown_description", "screenshots__image")
+            .order_by("views")[:4]
+        )
+        # TODO fix this, edit: Hopefully this will work
+        if isinstance(self.request.user, User):
+            context["subscribed_to_domain"] = self.object.domain.user_subscribed_domains.filter(
+                pk=self.request.user.userprofile.id
+            ).exists()
+        else:
+            context["subscribed_to_domain"] = False
+
+        if isinstance(self.request.user, User):
+            context["bookmarked"] = self.request.user.userprofile.issue_saved.filter(
+                pk=self.object.id
+            ).exists()
+
+        context["screenshots"] = IssueScreenshot.objects.filter(issue=self.object).all()
+
+        return context
+
+
+@receiver(user_signed_up)
+def handle_user_signup(request, user, **kwargs):
+    referral_token = request.session.get("ref")
+    if referral_token:
+        try:
+            invite = InviteFriend.objects.get(referral_code=referral_token)
+            invite.recipients.add(user)
+            invite.point_by_referral += 2
+            invite.save()
+            reward_sender_with_points(invite.sender)
+            del request.session["ref"]
+        except InviteFriend.DoesNotExist:
+            pass
+
+
+def reward_sender_with_points(sender):
+    # Create or update points for the sender
+    points, created = Points.objects.get_or_create(user=sender, defaults={"score": 0})
+    points.score += 2  # Reward 2 points for each successful referral signup
+    points.save()
+
+
+def referral_signup(request):
+    referral_token = request.GET.get("ref")
+    # check the referral token is present on invitefriend model or not and if present then set the referral token in the session
+    if referral_token:
+        try:
+            invite = InviteFriend.objects.get(referral_code=referral_token)
+            request.session["ref"] = referral_token
+        except InviteFriend.DoesNotExist:
+            messages.error(request, "Invalid referral token")
+            return redirect("account_signup")
+    return redirect("account_signup")
+
+
+def invite_friend(request):
+    # check if the user is authenticated or not
+    if not request.user.is_authenticated:
+        return redirect("account_login")
+    current_site = get_current_site(request)
+    referral_code, created = InviteFriend.objects.get_or_create(sender=request.user)
+    referral_link = f"https://{current_site.domain}/referral/?ref={referral_code.referral_code}"
+    context = {
+        "referral_link": referral_link,
+    }
+    return render(request, "invite_friend.html", context)
+
+
+def trademark_search(request, **kwargs):
+    if request.method == "POST":
+        slug = request.POST.get("query")
+        return redirect("trademark_detailview", slug=slug)
+    return render(request, "trademark_search.html")
+
+
+def trademark_detailview(request, slug):
+    if settings.USPTO_API is None:
+        return HttpResponse("API KEY NOT SETUP")
+
+    trademark_available_url = "https://uspto-trademark.p.rapidapi.com/v1/trademarkAvailable/%s" % (
+        slug
+    )
+    headers = {
+        "x-rapidapi-host": "uspto-trademark.p.rapidapi.com",
+        "x-rapidapi-key": settings.USPTO_API,
+    }
+    trademark_available_response = requests.get(trademark_available_url, headers=headers)
+    ta_data = trademark_available_response.json()
+
+    if ta_data[0]["available"] == "no":
+        trademark_search_url = (
+            "https://uspto-trademark.p.rapidapi.com/v1/trademarkSearch/%s/active" % (slug)
+        )
+        trademark_search_response = requests.get(trademark_search_url, headers=headers)
+        ts_data = trademark_search_response.json()
+        context = {"count": ts_data["count"], "items": ts_data["items"], "query": slug}
+
+    else:
+        context = {"available": ta_data[0]["available"]}
+
+    return render(request, "trademark_detailview.html", context)
+
 
 # class CreateIssue(CronJobBase):
 #     RUN_EVERY_MINS = 1
@@ -3518,6 +4256,7 @@ def safe_redirect(request: HttpRequest):
 #         mail.select("inbox")  # connect to inbox.
 #         typ, data = mail.search(None, "ALL", "UNSEEN")
 #         import email
+
 
 #         for num in data[0].split():
 #             image = False
@@ -3544,10 +4283,10 @@ def safe_redirect(request: HttpRequest):
 #                         if word.lower() == "type":
 #                             flag_word = True
 #                             continue
-#                         if flag_word == False:
+#                         if not flag_word:
 #                             url = word
 #                             continue
-#                         if flag_word == True:
+#                         if flag_word:
 #                             label = word
 #                 if part.get_content_maintype() == "multipart":
 #                     continue
@@ -3579,9 +4318,9 @@ def safe_redirect(request: HttpRequest):
 #                 error = True
 #             if token == "None":
 #                 error = "TokenTrue"
-#             if image == False:
+#             if not image:
 #                 error = True
-#             if error == True:
+#             if error:
 #                 send_mail(
 #                     "Error In Your Report",
 #                     "There was something wrong with the mail you sent regarding the issue to be created. Please check the content and try again later !",
@@ -3613,3 +4352,209 @@ def safe_redirect(request: HttpRequest):
 #                     headers=headers,
 #                 )
 #         mail.logout()
+def update_bch_address(request):
+    if request.method == "POST":
+        selected_crypto = request.POST.get("selected_crypto")
+        new_address = request.POST.get("new_address")
+        if selected_crypto and new_address:
+            try:
+                user_profile = request.user.userprofile
+                match selected_crypto:
+                    case "Bitcoin":
+                        user_profile.btc_address = new_address
+                    case "Ethereum":
+                        user_profile.eth_address = new_address
+                    case "BitcoinCash":
+                        user_profile.bch_address = new_address
+                    case _:
+                        messages.error(request, f"Invalid crypto selected: {selected_crypto}")
+                        return redirect(reverse("profile", args=[request.user.username]))
+                user_profile.save()
+                messages.success(request, f"{selected_crypto} Address updated successfully.")
+            except Exception as e:
+                messages.error(request, f"Failed to update {selected_crypto} Address.")
+        else:
+            messages.error(request, f"Please provide a valid {selected_crypto}  Address.")
+    else:
+        messages.error(request, "Invalid request method.")
+
+    username = request.user.username if request.user.username else "default_username"
+    return redirect(reverse("profile", args=[username]))
+
+
+def sitemap(request):
+    random_domain = Domain.objects.order_by("?").first()
+    return render(request, "sitemap.html", {"random_domain": random_domain})
+
+
+class ContributorStatsView(TemplateView):
+    template_name = "contributor_stats.html"
+    today = False
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # Fetch all contributor stats records
+        stats = ContributorStats.objects.all()
+        if self.today:
+            # For "today" stats
+            user_stats = sorted(
+                ([stat.username, stat.prs] for stat in stats if stat.prs > 0),
+                key=lambda x: x[1],  # Sort by PRs value
+                reverse=True,  # Descending order
+            )
+        else:
+            # Convert the stats to a dictionary format expected by the template
+            user_stats = {
+                stat.username: {
+                    "commits": stat.commits,
+                    "issues_opened": stat.issues_opened,
+                    "issues_closed": stat.issues_closed,
+                    "assigned_issues": stat.assigned_issues,
+                    "prs": stat.prs,
+                    "comments": stat.comments,
+                }
+                for stat in stats
+            }
+
+        context["user_stats"] = user_stats
+        context["today"] = self.today
+        context["owner"] = "OWASP-BLT"
+        context["repo"] = "BLT"
+        context["start_date"] = (datetime.now().date() - timedelta(days=7)).isoformat()
+        context["end_date"] = datetime.now().date().isoformat()
+
+        return context
+
+
+@login_required
+def deletions(request):
+    if request.method == "POST":
+        form = MonitorForm(request.POST)
+        if form.is_valid():
+            monitor = form.save(commit=False)
+            monitor.user = request.user
+            monitor.save()
+            messages.success(request, "Form submitted successfully!")
+        else:
+            messages.error(request, "Form submission failed. Please correct the errors.")
+    else:
+        form = MonitorForm()
+
+    return render(
+        request,
+        "monitor.html",
+        {"form": form, "deletions": Monitor.objects.filter(user=request.user)},
+    )
+
+
+def generate_bid_image(request, bid_amount):
+    image = Image.new("RGB", (300, 100), color="white")
+    draw = ImageDraw.Draw(image)
+
+    font = ImageFont.load_default()
+    draw.text((10, 10), f"Bid Amount: ${bid_amount}", fill="black", font=font)
+    byte_io = io.BytesIO()
+    image.save(byte_io, format="PNG")
+    byte_io.seek(0)
+
+    return HttpResponse(byte_io, content_type="image/png")
+
+
+def change_bid_status(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            bid_id = data.get("id")
+            bid = Bid.objects.get(id=bid_id)
+            bid.status = "Selected"
+            bid.save()
+            return JsonResponse({"success": True})
+        except Bid.DoesNotExist:
+            return JsonResponse({"success": False, "error": "Bid not found"})
+    return HttpResponse(status=405)
+
+
+def get_unique_issues(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            issue_url = data.get("issue_url")
+            if not issue_url:
+                return JsonResponse({"success": False, "error": "issue_url not provided"})
+
+            all_bids = Bid.objects.filter(issue_url=issue_url).values()
+            return JsonResponse(list(all_bids), safe=False)
+        except json.JSONDecodeError:
+            return JsonResponse({"success": False, "error": "Invalid JSON"})
+    return HttpResponse(status=405)
+
+
+def select_bid(request):
+    return render(request, "bid_selection.html")
+
+
+@login_required
+def SaveBiddingData(request):
+    if request.method == "POST":
+        user = request.user.username
+        url = request.POST.get("issue_url")
+        amount = request.POST.get("bid_amount")
+        current_time = datetime.now(timezone.utc)
+        bid = Bid(
+            user=user,
+            issue_url=url,
+            amount=amount,
+            created=current_time,
+            modified=current_time,
+        )
+        bid.save()
+        bid_link = f"https://blt.owasp.org/generate_bid_image/{amount}/"
+        return JsonResponse({"Paste this in GitHub Issue Comments:": bid_link})
+
+    return render(request, "bidding.html")
+
+
+def fetch_current_bid(request):
+    if request.method == "POST":
+        unique_issue_links = Bid.objects.values_list("issue_url", flat=True).distinct()
+        data = json.loads(request.body)
+        issue_url = data.get("issue_url")
+        bid = Bid.objects.filter(issue_url=issue_url).order_by("-created").first()
+        if bid is not None:
+            return JsonResponse(
+                {
+                    "issueLinks": list(unique_issue_links),
+                    "current_bid": bid.amount,
+                    "status": bid.status,
+                }
+            )
+        else:
+            return JsonResponse({"error": "Bid not found"}, status=404)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@login_required
+def submit_pr(request):
+    if request.method == "POST":
+        user = request.user.username
+        pr_link = request.POST.get("pr_link")
+        amount = request.POST.get("bid_amount")
+        issue_url = request.POST.get("issue_link")
+        status = "Submitted"
+        current_time = datetime.now(timezone.utc)
+        bch_address = request.POST.get("bch_address")
+        bid = Bid(
+            user=user,
+            pr_link=pr_link,
+            amount=amount,
+            issue_url=issue_url,
+            status=status,
+            created=current_time,
+            modified=current_time,
+            bch_address=bch_address,
+        )
+        bid.save()
+        return render(request, "submit_pr.html")
+
+    return render(request, "submit_pr.html")

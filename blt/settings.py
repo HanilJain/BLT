@@ -6,16 +6,14 @@ https://docs.djangoproject.com/en/1.8/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/1.8/ref/settings/
 """
+
+# from google.oauth2 import service_account
 import os
 import sys
 
 import dj_database_url
-from django.http import Http404
-from django.utils.translation import gettext_lazy as _
 import environ
-# from google.oauth2 import service_account
-import os
-import socket
+from django.utils.translation import gettext_lazy as _
 
 env = environ.Env()
 # reading .env file
@@ -24,23 +22,17 @@ environ.Env.read_env()
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "blank")
 
-# Check the current hostname and adjust PROJECT_NAME and DOMAIN_NAME accordingly
-current_hostname = socket.gethostname()
-
-print("Current hostname:", current_hostname)
-print(os.environ)
-
-#if current_hostname == "owasp.org":
 
 PROJECT_NAME = "BLT"
 DOMAIN_NAME = "blt.owasp.org"
 FQDN = "blt.owasp.org"
-
+DOMAIN_NAME_PREVIOUS = os.environ.get("DOMAIN_NAME_PREVIOUS", "BLT")
 # else:
 #     # Default values if hostname does not match
 #     PROJECT_NAME = os.environ.get("PROJECT_NAME", "BLT")
-#     DOMAIN_NAME = os.environ.get("DOMAIN_NAME", "127.0.0.1") 
+#     DOMAIN_NAME = os.environ.get("DOMAIN_NAME", "127.0.0.1")
 #     FQDN = "www." + DOMAIN_NAME
 
 PROJECT_NAME_LOWER = PROJECT_NAME.lower()
@@ -48,16 +40,16 @@ PROJECT_NAME_UPPER = PROJECT_NAME.upper()
 
 ADMIN_URL = os.environ.get("ADMIN_URL", "admin")
 PORT = os.environ.get("PORT", "8000")
-DEFAULT_FROM_EMAIL = "support@" + DOMAIN_NAME
-SERVER_EMAIL = "support@" + DOMAIN_NAME
+DEFAULT_FROM_EMAIL = os.environ.get("FROM_EMAIL", "test@localhost")
+SERVER_EMAIL = os.environ.get("FROM_EMAIL", "test@localhost")
 
 
-EMAIL_TO_STRING = PROJECT_NAME + " <"+ SERVER_EMAIL +">"
-BLOG_URL = os.environ.get("BLOG_URL","https://owasp.org/www-project-bug-logging-tool/")
-FACEBOOK_URL = os.environ.get("FACEBOOK_URL","https://www.facebook.com/groups/owaspfoundation/")
-TWITTER_URL = os.environ.get("TWITTER_URL","https://twitter.com/owasp")
-GITHUB_URL = os.environ.get("GITHUB_URL","https://github.com/OWASP/BLT")
-EXTENSION_URL = os.environ.get("EXTENSION_URL","https://github.com/OWASP/BLT")
+EMAIL_TO_STRING = PROJECT_NAME + " <" + SERVER_EMAIL + ">"
+BLOG_URL = os.environ.get("BLOG_URL", "https://owasp.org/www-project-bug-logging-tool/")
+FACEBOOK_URL = os.environ.get("FACEBOOK_URL", "https://www.facebook.com/groups/owaspfoundation/")
+TWITTER_URL = os.environ.get("TWITTER_URL", "https://twitter.com/owasp")
+GITHUB_URL = os.environ.get("GITHUB_URL", "https://github.com/OWASP/BLT")
+EXTENSION_URL = os.environ.get("EXTENSION_URL", "https://github.com/OWASP/BLT")
 
 ADMINS = (("Admin", DEFAULT_FROM_EMAIL),)
 
@@ -75,6 +67,8 @@ SITE_ID = 1
 # Application definition
 
 INSTALLED_APPS = (
+    "notification_app",
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -119,10 +113,9 @@ MIDDLEWARE = (
     "django.middleware.locale.LocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    "allauth.account.middleware.AccountMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    'allauth.account.middleware.AccountMiddleware',#Newly added for allauth 0.60.1
+    "allauth.account.middleware.AccountMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -199,13 +192,23 @@ AUTHENTICATION_BACKENDS = (
 #        'LOCATION': 'cache_table',
 #    }
 # }
-REST_AUTH = {
-    'SESSION_LOGIN': False
-}
+
+
+REST_AUTH = {"SESSION_LOGIN": False}
 CONN_MAX_AGE = None
 
 WSGI_APPLICATION = "blt.wsgi.application"
 
+ASGI_APPLICATION = "blt.asgi.application"
+
+CHANNEL_LAYER = {
+    "default" : {
+        "BACKEND": "channels_redis.core.RedisChaneelLayer",
+        "CONFIG":{
+            "hosts": [("localhost", 8000)],
+        }
+    }
+}
 # Database
 # https://docs.djangoproject.com/en/1.9/ref/settings/#databases
 
@@ -284,7 +287,6 @@ if "DATABASE_URL" in os.environ:
     GS_SECRET_ACCESS_KEY = os.environ.get("GS_SECRET_ACCESS_KEY", "blank")
     GOOGLE_APPLICATION_CREDENTIALS = "/app/google-credentials.json"
 
-
     GS_BUCKET_NAME = "bhfiles"
     DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
     GS_FILE_OVERWRITE = False
@@ -293,12 +295,14 @@ if "DATABASE_URL" in os.environ:
 
     import sentry_sdk
     from sentry_sdk.integrations.django import DjangoIntegration
+
     sentry_sdk.init(
         dsn=os.environ.get("SENTRY_DSN", "https://key.ingest.sentry.io/project"),
         integrations=[DjangoIntegration()],
         send_default_pii=True,
         traces_sample_rate=1.0,
         profiles_sample_rate=1.0,
+        release=os.environ.get("HEROKU_RELEASE_VERSION", default=""),
     )
 
 else:
@@ -318,7 +322,15 @@ ACCOUNT_EMAIL_VERIFICATION = "optional"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Allow all host headers
-ALLOWED_HOSTS = ["." + DOMAIN_NAME, "127.0.0.1", "localhost", "0.0.0.0", "blt.owasp.org"]
+ALLOWED_HOSTS = [
+    "." + DOMAIN_NAME,
+    "127.0.0.1",
+    "localhost",
+    "0.0.0.0",
+    "blt.owasp.org",
+    "." + DOMAIN_NAME_PREVIOUS,
+    "blt.onrender.com",
+]
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/1.8/howto/static-files/
@@ -329,8 +341,8 @@ STATIC_URL = "/static/"
 # Extra places for collectstatic to find static files.
 STATICFILES_DIRS = (
     os.path.join(BASE_DIR, "static"),
-    os.path.join(BASE_DIR, "website","static"),   
-    os.path.join(BASE_DIR, "company","static"), 
+    os.path.join(BASE_DIR, "website", "static"),
+    os.path.join(BASE_DIR, "company", "static"),
 )
 
 ABSOLUTE_URL_OVERRIDES = {
@@ -368,13 +380,11 @@ AVATAR_PATH = os.path.join(MEDIA_ROOT, USERS_AVATAR_PATH)
 if not os.path.exists(AVATAR_PATH):
     os.makedirs(AVATAR_PATH)
 
-if DEBUG == True or TESTING:
+if DEBUG or TESTING:
     CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 else:
     if os.environ.get("MEMCACHIER_SERVERS", ""):
-        os.environ["MEMCACHE_SERVERS"] = os.environ.get(
-            "MEMCACHIER_SERVERS", ""
-        ).replace(",", ";")
+        os.environ["MEMCACHE_SERVERS"] = os.environ.get("MEMCACHIER_SERVERS", "").replace(",", ";")
         os.environ["MEMCACHE_USERNAME"] = os.environ.get("MEMCACHIER_USERNAME", "")
         os.environ["MEMCACHE_PASSWORD"] = os.environ.get("MEMCACHIER_PASSWORD", "")
 
@@ -398,14 +408,12 @@ else:
             }
         }
     else:
-        CACHES = {
-            "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
-        }
+        CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 
 CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'unique-snowflake',
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "unique-snowflake",
     }
 }
 
@@ -420,23 +428,17 @@ else:
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework.authentication.TokenAuthentication",
-    ),
+    "DEFAULT_AUTHENTICATION_CLASSES": ("rest_framework.authentication.TokenAuthentication",),
     "PAGE_SIZE": 10,
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': f'{anon_throttle}/day',
-        'user': f'{user_throttle}/day'
-    }
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": f"{anon_throttle}/day",
+        "user": f"{user_throttle}/day",
+    },
 }
 
 SOCIALACCOUNT_PROVIDER = {
-    'github': {
-        'scope': ('user:email',)
-        },
-    'google': {
-        'scope': ('user:email',)
-        }
+    "github": {"scope": ("user:email",)},
+    "google": {"scope": ("user:email",)},
 }
 
 X_FRAME_OPTIONS = "SAMEORIGIN"
@@ -489,9 +491,7 @@ SUPERUSER_PASSWORD = env("SUPERUSER_PASSWORD", default="admin@123")
 
 SUPERUSERS = ((SUPERUSER_USERNAME, SUPERUSER_EMAIL, SUPERUSER_PASSWORD),)
 
-STRIPE_LIVE_PUBLIC_KEY = os.environ.get(
-    "STRIPE_LIVE_PUBLIC_KEY", "<your publishable key>"
-)
+STRIPE_LIVE_PUBLIC_KEY = os.environ.get("STRIPE_LIVE_PUBLIC_KEY", "<your publishable key>")
 STRIPE_LIVE_SECRET_KEY = os.environ.get("STRIPE_LIVE_SECRET_KEY", "<your secret key>")
 STRIPE_TEST_PUBLIC_KEY = os.environ.get(
     "STRIPE_TEST_PUBLIC_KEY",
@@ -520,3 +520,22 @@ IS_TEST = False
 if "test" in sys.argv:
     CAPTCHA_TEST_MODE = True
     IS_TEST = True
+
+
+# Twitter
+
+# BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
+# APP_KEY = os.environ.get("APP_KEY")
+# APP_KEY_SECRET = os.environ.get("APP_KEY_SECRET")
+# ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+# ACCESS_TOKEN_SECRET = os.environ.get("ACCESS_TOKEN_SECRET")
+
+BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAACY4swEAAAAACCwbesyUMRhqJcZ5IQKJ%2FeAWpYY%3DWhxvFboQKFlJtKIJ1WWlL2fWYzKSfF383NMBsgRFTg9h8Y5jBF"
+APP_KEY = "hBSe9kWzsWvrZTjbm5326j9TE"
+APP_KEY_SECRET = "mbHK5fNCkIppsO8ErswLzGDXMdRS74XltkHmnFF2WXtxB60AIE"
+ACCESS_TOKEN = "1562852714412793857-CHEfVrO4shDhoWJOsBNCN7Z0d0d3Kw"
+ACCESS_TOKEN_SECRET = "jKfqv8FaIuYcyYdy6jdGprh2WHJtonR4ziHgETkC81hYq"
+
+# USPTO
+
+USPTO_API = os.environ.get("USPTO_API")

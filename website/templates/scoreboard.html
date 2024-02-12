@@ -2,9 +2,9 @@
 {% load gravatar %}
 {% load static %}
 {% load humanize %}
-
 {% block style %}
-<style>
+    {% include "includes/sidenav.html" %}
+    <style>
     .alt-img {
         padding-top: 25px;
         width: 75px;
@@ -27,83 +27,94 @@
         background: #73DC69;
         color: white;
     }
-</style>
-{% endblock %}
-
+    .bottom-right {
+        position: absolute;
+        bottom: 10px;
+        right: 15px;
+}
+    </style>
+{% endblock style %}
 {% block content %}
-<script src="{% static "js/jquery.tablesorter.js" %}"></script>
-
-<script>
+    <script src="{% static "js/jquery.tablesorter.js" %}"></script>
+    <script>
     $(function (load) {
         $('#keywords').tablesorter();
     });
-</script>
-
-
-<div class="row">
-    <div class="col-lg-6">
-        <h2 class="page-header">Company Scoreboard</h2>
+    </script>
+    <div class="bottom-right">
+        <a href="https://github.com/OWASP-BLT/BLT/blob/main/website/templates/scoreboard.html">
+            <i class="fab fa-github"></i>
+        </a>
+        <a href="https://www.figma.com/file/s0xuxeU6O2guoWEfA9OElZ/Design?node-id=1307%3A653&t=pqxWpF3hcYxjEDrs-1">
+            <i class="fab fa-figma"></i>
+        </a>
     </div>
-</div>
-
-
-<div class="row">
-    <div class="col-lg-10 col-lg-offset-1">
-        <table id="keywords" class="table table-bordered table-striped table-condensed">
-            <thead>
-                <tr>
-                    <th>Company</th>
-                    <th>Company Name</th>
-                    <th>Open Issues</th>
-                    <th>Closed Issues</th>
-                    <th>Email Event</th>
-                    <th>Time of Last Event</th>
-                    <th>Top Company Tester</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for domain in scoreboard %}
-                <tr>
-                    <td height="80px">
-                        <a href="/domain/{{ domain.domain_name }}">
-                            <img src="{{ domain.get_logo }}" alt="{{ domain.name }}" style="width:80px;"
-                                onerror="this.onerror=null; this.style.display='none';this.parentNode.childNodes[3].style.display='block';">
-                            <img src="{% static 'img/logo-small-transparent.png' %}" class="alt-img">
-                        </a>
-                    </td>
-                    <td class="text-capitalize">{{ domain.get_name }}</td>
-                    <td>{{ domain.open_issues|length }}</td>
-                    <td>{{ domain.closed_issues|length }}</td>
-                    <td class="text-capitalize">{{ domain.email_event }}</td>
-                    <td>{{ domain.modified|timesince }} ago</td>
-                    <td class="text-capitalize">
-                        <a href="/profile/{{ domain.top_tester.username }}">
-                            {{ domain.top_tester|default:"" }}
-                        </a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<div>
-    {% if is_paginated %}
-    <div class="col-md-12">
-        <div class="text-center">
-            {% if page_obj.has_previous %}
-            <a href="?page={{ page_obj.previous_page_number }}{% if user %}&user={{ user }}{% endif %}"
-                class="btn btn-default">Prev</a>
-            {% endif %}
-            <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-            {% if page_obj.has_next %}
-            <a href="?page={{ page_obj.next_page_number }}{% if user %}&user={{ user }}{% endif %}"
-                class="btn btn-default">Next</a>
-            {% endif %}
+    <div class="row">
+        <div class="col-lg-6">
+            <h2 class="page-header">Company Scoreboard</h2>
         </div>
     </div>
-    {% endif %}
-</div>
-{% endblock %}
-
+    <div class="row">
+        <div class="col-lg-10 col-lg-offset-1">
+            <table id="keywords"
+                   class="table table-bordered table-striped table-condensed">
+                <thead>
+                    <tr>
+                        <th>Company</th>
+                        <th>Company Name</th>
+                        <th>Open Issues</th>
+                        <th>Closed Issues</th>
+                        <th>Email Event</th>
+                        <th>Time of Last Event</th>
+                        <th>Top Company Tester</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for domain in scoreboard %}
+                        <tr>
+                            <td height="80px">
+                                <a href="{% url 'domain' slug=domain.name %}">
+                                    <img src="{{ domain.get_logo }}"
+                                         alt="{{ domain.name }}"
+                                         onerror="this.onerror=null; this.style.display='none';this.parentNode.childNodes[3].style.display='block';"
+                                         width="80px"
+                                         height="80px">
+                                    <img src="{% static 'img/logo-small-transparent.png' %}"
+                                         class="alt-img"
+                                         alt="No logo found"
+                                         width="80px"
+                                         height="80px">
+                                </a>
+                            </td>
+                            <td class="text-capitalize">{{ domain.get_name }}</td>
+                            <td>{{ domain.open_issues|length }}</td>
+                            <td>{{ domain.closed_issues|length }}</td>
+                            <td class="text-capitalize">{{ domain.email_event }}</td>
+                            <td>{{ domain.modified|timesince }} ago</td>
+                            <td class="text-capitalize">
+                                <a href="{% url 'profile' slug=domain.top_tester %}">{{ domain.top_tester|default:"" }}</a>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div>
+        {% if is_paginated %}
+            <div class="col-md-12">
+                <div class="text-center">
+                    {% if page_obj.has_previous %}
+                        <a href="?page={{ page_obj.previous_page_number }}{% if user %}&user={{ user }}{% endif %}"
+                           class="btn btn-default">Prev</a>
+                    {% endif %}
+                    <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+                    {% if page_obj.has_next %}
+                        <a href="?page={{ page_obj.next_page_number }}{% if user %}&user={{ user }}{% endif %}"
+                           class="btn btn-default">Next</a>
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
+    </div>
+{% endblock content %}

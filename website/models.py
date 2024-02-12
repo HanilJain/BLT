@@ -1,27 +1,28 @@
 import os
+import uuid
+from decimal import Decimal
 from urllib.parse import urlparse
+
 import requests
-import tweepy
-from PIL import Image
 from annoying.fields import AutoOneToOneField
+from captcha.fields import CaptchaField
 from colorthief import ColorThief
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.core.validators import URLValidator
+from django.core.validators import URLValidator
 from django.db import models
 from django.db.models import Count
-from django.db.models import signals
 from django.db.models.signals import post_save
-from unidecode import unidecode
 from django.dispatch import receiver
-from rest_framework.authtoken.models import Token
+from django.utils import timezone
+from google.cloud import storage
 from mdeditor.fields import MDTextField
-from decimal import Decimal
-from captcha.fields import CaptchaField
-from django.core.files.storage import default_storage
-import uuid
+from PIL import Image
+from rest_framework.authtoken.models import Token
 
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
@@ -30,6 +31,7 @@ def create_auth_token(sender, instance=None, created=False, **kwargs):
         Token.objects.create(user=instance)
         Wallet.objects.create(user=instance)
 
+
 class Subscription(models.Model):
     name = models.CharField(max_length=25, null=False, blank=True)
     charge_per_month = models.IntegerField(null=False, blank=True)
@@ -37,37 +39,35 @@ class Subscription(models.Model):
     number_of_domains = models.IntegerField(null=False, blank=True)
     feature = models.BooleanField(default=True)
 
+
 def generate_uuid_for_company(apps, schema_editor):
-    company_model = apps.get_model('website', 'Company')
+    company_model = apps.get_model("website", "Company")
     for obj in company_model.objects.all():
         obj.company_id = uuid.uuid4()  # Replace with your desired UUID generation logic
         obj.save()
 
+
 class Company(models.Model):
     admin = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE)
-    managers = models.ManyToManyField(User,related_name="user_companies")
+    managers = models.ManyToManyField(User, related_name="user_companies")
     name = models.CharField(max_length=255)
     logo = models.ImageField(upload_to="company_logos", null=True, blank=True)
-    company_id = models.CharField(max_length=255, unique=True, editable=False) # uuid
     url = models.URLField()
     email = models.EmailField(null=True, blank=True)
     twitter = models.CharField(max_length=30, null=True, blank=True)
     facebook = models.URLField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
-    subscription = models.ForeignKey(
-        Subscription, null=True, blank=True, on_delete=models.CASCADE
-    )
+    subscription = models.ForeignKey(Subscription, null=True, blank=True, on_delete=models.CASCADE)
     is_active = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
 
+
 class Domain(models.Model):
-    company = models.ForeignKey(
-        Company, null=True, blank=True, on_delete=models.CASCADE
-    )
-    managers = models.ManyToManyField(User,related_name="user_domains")
+    company = models.ForeignKey(Company, null=True, blank=True, on_delete=models.CASCADE)
+    managers = models.ManyToManyField(User, related_name="user_domains", blank=True)
     name = models.CharField(max_length=255, unique=True)
     url = models.URLField()
     logo = models.ImageField(upload_to="logos", null=True, blank=True)
@@ -157,6 +157,20 @@ class Domain(models.Model):
     def get_absolute_url(self):
         return "/domain/" + self.name
 
+    def get_twitter_account(self, name):
+        if self.twitter:
+            return self.twitter
+
+        validate = URLValidator(schemes=["https"])  # Only allow HTTPS URLs
+        try:
+            twitter_url = "https://twitter.com/%s" % (name)
+            validate(twitter_url)
+            self.twitter = name
+            self.save()
+            return name
+        except ValidationError:
+            return False
+
 
 def validate_image(fieldfile_obj):
     try:
@@ -169,7 +183,6 @@ def validate_image(fieldfile_obj):
 
 
 class Hunt(models.Model):
-    
     class Meta:
         ordering = ["-id"]
 
@@ -198,23 +211,24 @@ class Hunt(models.Model):
         parsed_url = urlparse(self.url)
         return parsed_url.netloc.split(".")[-2:][0].title()
 
-
     def __str__(self) -> str:
         return self.name
 
-class HuntPrize(models.Model):
 
-    hunt = models.ForeignKey(Hunt,on_delete=models.CASCADE)
+class HuntPrize(models.Model):
+    hunt = models.ForeignKey(Hunt, on_delete=models.CASCADE)
     name = models.CharField(max_length=50)
     value = models.PositiveIntegerField(default=0)
-    no_of_eligible_projects = models.PositiveIntegerField(default=1) # no of winner in this prize
-    valid_submissions_eligible = models.BooleanField(default=False)  # all valid submissions are winners in this prize
+    no_of_eligible_projects = models.PositiveIntegerField(default=1)  # no of winner in this prize
+    valid_submissions_eligible = models.BooleanField(
+        default=False
+    )  # all valid submissions are winners in this prize
     prize_in_crypto = models.BooleanField(default=False)
-    description = models.TextField(null=True,blank=True)
+    description = models.TextField(null=True, blank=True)
 
     def __str__(self) -> str:
         return self.hunt.name + self.name
-    
+
 
 class Issue(models.Model):
     labels = (
@@ -228,12 +242,12 @@ class Issue(models.Model):
         (7, "Server Down"),
     )
     user = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE)
-    team_members = models.ManyToManyField(User,related_name="reportmembers",blank=True)
+    team_members = models.ManyToManyField(User, related_name="reportmembers", blank=True)
     hunt = models.ForeignKey(Hunt, null=True, blank=True, on_delete=models.CASCADE)
     domain = models.ForeignKey(Domain, null=True, blank=True, on_delete=models.CASCADE)
     url = models.URLField()
     description = models.TextField()
-    markdown_description = models.TextField(null=True,blank=True)
+    markdown_description = models.TextField(null=True, blank=True)
     captcha = CaptchaField()
     label = models.PositiveSmallIntegerField(choices=labels, default=0)
     views = models.IntegerField(null=True, blank=True)
@@ -242,7 +256,9 @@ class Issue(models.Model):
     status = models.CharField(max_length=10, default="open", null=True, blank=True)
     user_agent = models.CharField(max_length=255, default="", null=True, blank=True)
     ocr = models.TextField(default="", null=True, blank=True)
-    screenshot = models.ImageField(upload_to="screenshots", null=True, blank=True, validators=[validate_image])
+    screenshot = models.ImageField(
+        upload_to="screenshots", null=True, blank=True, validators=[validate_image]
+    )
     closed_by = models.ForeignKey(
         User, null=True, blank=True, related_name="closed_by", on_delete=models.CASCADE
     )
@@ -251,8 +267,10 @@ class Issue(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
     is_hidden = models.BooleanField(default=False)
-    rewarded = models.PositiveIntegerField(default=0) # money rewarded by the company
-
+    rewarded = models.PositiveIntegerField(default=0)  # money rewarded by the company
+    reporter_ip_address = models.GenericIPAddressField(null=True, blank=True)
+    cve_id = models.CharField(max_length=16, null=True, blank=True)
+    cve_score = models.DecimalField(max_digits=2, decimal_places=1, null=True, blank=True)
 
     def __unicode__(self):
         return self.description
@@ -271,9 +289,6 @@ class Issue(models.Model):
     def domain_name(self):
         parsed_url = urlparse(self.url)
         domain = parsed_url.hostname
-        temp = domain.rsplit(".")
-        if len(temp) == 3:
-            domain = temp[1] + "." + temp[2]
         return domain
 
     def get_twitter_message(self):
@@ -285,8 +300,7 @@ class Issue(models.Model):
             + self.domain_title
             + spacer
             + self.description[
-                : 140
-                - (len(prefix) + len(self.domain_title) + len(spacer) + len(issue_link))
+                : 140 - (len(prefix) + len(self.domain_title) + len(spacer) + len(issue_link))
             ]
             + issue_link
         )
@@ -304,41 +318,74 @@ class Issue(models.Model):
                 return self.ocr
             except:
                 return "OCR not installed"
-            
+
     def remove_user(self):
-        self.user=None
+        self.user = None
         self.save()
 
-    @property
     def get_absolute_url(self):
         return "/issue/" + str(self.id)
 
+    def get_cve_score(self):
+        if self.cve_id is None:
+            return None
+        try:
+            url = "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=%s" % (self.cve_id)
+            response = requests.get(url).json()
+            results = response["resultsPerPage"]
+            if results != 0:
+                metrics = response["vulnerabilities"][0]["cve"]["metrics"]
+                if metrics:
+                    cvss_metric_v = next(iter(metrics))
+                    return metrics[cvss_metric_v][0]["cvssData"]["baseScore"]
+        except (requests.exceptions.HTTPError, requests.exceptions.ReadTimeout) as e:
+            print(e)
+            return None
+
     class Meta:
         ordering = ["-created"]
-    
-    
+
 
 class IssueScreenshot(models.Model):
     image = models.ImageField(upload_to="screenshots", validators=[validate_image])
-    issue = models.ForeignKey(Issue,on_delete=models.CASCADE,related_name="screenshots")
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="screenshots")
+
+    # def delete(self, *args, **kwargs):
+    #     if self.image:
+    #         # Delete the image file
+    #         storage = self.image.storage
+    #         name = (
+    #             self.image.name
+    #         )  # Use .name to get the relative file path in the storage system
+    #         storage.delete(name)
+    #     super(IssueScreenshot, self).delete(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.image:
+            client = storage.Client()
+            bucket = client.bucket(settings.GS_BUCKET_NAME)
+            blob = bucket.blob(self.image.name)
+            blob.delete()
+
+        super().delete(*args, **kwargs)
 
 
 @receiver(post_save, sender=Issue)
 def update_issue_image_access(sender, instance, **kwargs):
-   
-    if instance.is_hidden :
-        issue_screenshot_list=IssueScreenshot.objects.filter(issue=instance.id)
+    if instance.is_hidden:
+        issue_screenshot_list = IssueScreenshot.objects.filter(issue=instance.id)
         for screenshot in issue_screenshot_list:
-                old_name=screenshot.image.name
-                if "hidden" not in old_name:
-                    filename = screenshot.image.name
-                    extension = filename.split(".")[-1] 
-                    name = filename[12:99]+"hidden" + str(uuid.uuid4()) + "." + extension
-                    default_storage.save(f"screenshots/{name}",screenshot.image)   
-                    default_storage.delete(old_name)
-                    screenshot.image=f"screenshots/{name}"
-                    screenshot.image.name=f"screenshots/{name}"
-                    screenshot.save()  
+            old_name = screenshot.image.name
+            if "hidden" not in old_name:
+                filename = screenshot.image.name
+                extension = filename.split(".")[-1]
+                name = filename[:20] + "hidden" + str(uuid.uuid4())[:40] + "." + extension
+                default_storage.save(f"screenshots/{name}", screenshot.image)
+                default_storage.delete(old_name)
+                screenshot.image = f"screenshots/{name}"
+                screenshot.image.name = f"screenshots/{name}"
+                screenshot.save()
+
 
 TWITTER_MAXLENGTH = getattr(settings, "TWITTER_MAXLENGTH", 140)
 
@@ -361,50 +408,6 @@ class Winner(models.Model):
     prize_distributed = models.BooleanField(default=False)
 
 
-def post_to_twitter(sender, instance, *args, **kwargs):
-    if not kwargs.get("created"):
-        return False
-    try:
-        consumer_key = os.environ["TWITTER_CONSUMER_KEY"]
-        consumer_secret = os.environ["TWITTER_CONSUMER_SECRET"]
-        access_key = os.environ["TWITTER_ACCESS_KEY"]
-        access_secret = os.environ["TWITTER_ACCESS_SECRET"]
-    except KeyError:
-        print("WARNING: Twitter account not configured.")
-        return False
-
-    try:
-        text = instance.get_twitter_message()
-    except AttributeError:
-        text = str(instance)
-
-    mesg = "%s" % (text)
-    if len(mesg) > TWITTER_MAXLENGTH:
-        size = len(mesg + "...") - TWITTER_MAXLENGTH
-        mesg = "%s..." % (text[:-size])
-
-    import logging
-
-    logger = logging.getLogger("testlogger")
-
-    if not settings.DEBUG:
-        try:
-            auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
-            auth.set_access_token(access_key, access_secret)
-            api = tweepy.API(auth)
-            file = default_storage.open(instance.screenshot.file.name, "rb")
-            
-            media_ids = api.media_upload(
-                filename=unidecode(instance.screenshot.file.name), file=file
-            )
-            params = dict(status=mesg, media_ids=[media_ids.media_id_string])
-            api.update_status(**params)
-
-        except Exception as ex:
-            logger.debug("rem %s" % str(ex))
-            return False
-
-
 class Points(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     issue = models.ForeignKey(Issue, null=True, blank=True, on_delete=models.CASCADE)
@@ -415,14 +418,13 @@ class Points(models.Model):
 
 
 class InviteFriend(models.Model):
-    sender = models.ForeignKey(User, on_delete=models.CASCADE)
-    recipient = models.EmailField()
-    sent = models.DateTimeField(auto_now_add=True, db_index=True)
+    sender = models.ForeignKey(User, related_name="sent_invites", on_delete=models.CASCADE)
+    recipients = models.ManyToManyField(User, related_name="received_invites", blank=True)
+    referral_code = models.CharField(max_length=100, default=uuid.uuid4, editable=False)
+    point_by_referral = models.IntegerField(default=0)
 
-    class Meta:
-        ordering = ("-sent",)
-        verbose_name = "invitation"
-        verbose_name_plural = "invitations"
+    def __str__(self):
+        return f"Invite from {self.sender}"
 
 
 def user_images_path(instance, filename):
@@ -440,27 +442,23 @@ class UserProfile(models.Model):
         (3, "Gold"),
         (4, "Platinum"),
     )
-    follows = models.ManyToManyField(
-        "self", related_name="follower", symmetrical=False, blank=True
-    )
-    user = AutoOneToOneField(
-        "auth.user", related_name="userprofile", on_delete=models.CASCADE
-    )
+    follows = models.ManyToManyField("self", related_name="follower", symmetrical=False, blank=True)
+    user = AutoOneToOneField("auth.user", related_name="userprofile", on_delete=models.CASCADE)
     user_avatar = models.ImageField(upload_to=user_images_path, blank=True, null=True)
     title = models.IntegerField(choices=title, default=0)
     description = models.TextField(blank=True, null=True)
-    winnings = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True
-    )
+    winnings = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     issue_upvoted = models.ManyToManyField(Issue, blank=True, related_name="upvoted")
     issue_downvoted = models.ManyToManyField(Issue, blank=True, related_name="downvoted")
     issue_saved = models.ManyToManyField(Issue, blank=True, related_name="saved")
-    issue_flaged = models.ManyToManyField(Issue,blank=True,related_name="flaged") 
+    issue_flaged = models.ManyToManyField(Issue, blank=True, related_name="flaged")
     issues_hidden = models.BooleanField(default=False)
 
-    subscribed_domains = models.ManyToManyField(Domain,related_name="user_subscribed_domains")
-    subscribed_users = models.ManyToManyField(User,related_name="user_subscribed_users")
-    crypto_address = models.CharField(max_length=100,null=True,blank=True)
+    subscribed_domains = models.ManyToManyField(Domain, related_name="user_subscribed_domains")
+    subscribed_users = models.ManyToManyField(User, related_name="user_subscribed_users")
+    btc_address = models.CharField(max_length=100, blank=True, null=True)
+    bch_address = models.CharField(max_length=100, blank=True, null=True)
+    eth_address = models.CharField(max_length=100, blank=True, null=True)
 
     def avatar(self, size=36):
         if self.user_avatar:
@@ -508,9 +506,7 @@ class CompanyAdmin(models.Model):
     )
     role = models.IntegerField(choices=role, default=0)
     user = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE)
-    company = models.ForeignKey(
-        Company, null=True, blank=True, on_delete=models.CASCADE
-    )
+    company = models.ForeignKey(Company, null=True, blank=True, on_delete=models.CASCADE)
     domain = models.ForeignKey(Domain, null=True, blank=True, on_delete=models.CASCADE)
     is_active = models.BooleanField(default=True)
 
@@ -554,3 +550,65 @@ class Payment(models.Model):
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE)
     value = models.DecimalField(max_digits=6, decimal_places=2)
     active = models.BooleanField(default=True)
+
+
+class ContributorStats(models.Model):
+    username = models.CharField(max_length=255, unique=True)
+    commits = models.IntegerField(default=0)
+    issues_opened = models.IntegerField(default=0)
+    issues_closed = models.IntegerField(default=0)
+    prs = models.IntegerField(default=0)
+    comments = models.IntegerField(default=0)
+    assigned_issues = models.IntegerField(default=0)
+    last_updated = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.username
+
+
+class Monitor(models.Model):
+    url = models.URLField()
+    keyword = models.CharField(max_length=255)
+    created = models.DateTimeField(auto_now_add=True)
+    modified = models.DateTimeField(auto_now=True)
+    last_checked_time = models.DateTimeField(auto_now=True)
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ("UP", "Up"),
+            ("DOWN", "Down"),
+        ],
+    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return f"Monitor for {self.url} by {self.user}"
+
+
+class Bid(models.Model):
+    user = models.CharField(default="Add user", max_length=30, null=True, blank=True)
+    issue_url = models.URLField()
+    created = models.DateTimeField(default=timezone.now)
+    modified = models.DateTimeField(default=timezone.now)
+    amount = models.IntegerField()
+    status = models.CharField(default="Open", max_length=10)
+    pr_link = models.URLField(blank=True, null=True)
+    bch_address = models.CharField(blank=True, null=True, max_length=45)
+
+    # def save(self, *args, **kwargs):
+    #     if (
+    #         self.status == "Open"
+    #         and (timezone.now() - self.created).total_seconds() >= 24 * 60 * 60
+    #     ):
+    #         self.status = "Selected"
+    #         self.modified = timezone.now()
+    #         email_body = f"This bid was selected:\nIssue URL: {self.issue_url}\nUser: {self.user}\nCurrent Bid: {self.current_bid}\nCreated on: {self.created}\nBid Amount: {self.amount}"
+    #         send_mail(
+    #             "Bid Closed",
+    #             email_body,
+    #             settings.EMAIL_HOST_USER,
+    #             [settings.EMAIL_HOST_USER],
+    #             fail_silently=False,
+    #         )
+
+    #     super().save(*args, **kwargs)

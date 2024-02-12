@@ -93,9 +93,9 @@ msgstr "Ajoutez des e-mails qui seront autorisés à ajouter des domaines"
 
 #: company/templates/company/register_company.html:182
 #, fuzzy
-#| msgid "Email should be registered user on bugheist"
-msgid "Email should be registerd user on bugheist"
-msgstr "L'e-mail doit être un utilisateur enregistré sur bugheist"
+#| msgid "Email should be registered user on BLT"
+msgid "Email should be registerd user on BLT"
+msgstr "L'e-mail doit être un utilisateur enregistré sur BLT"
 
 #: company/templates/company/register_company.html:186
 #: website/templates/report.html:286
@@ -201,9 +201,9 @@ msgstr "Oui"
 #: website/templates/account/password_change.html:67
 #: website/templates/account/password_reset_from_key.html:41
 #: website/templates/account/password_reset_from_key.html:67
-#: website/templates/base_admin.html:109
-#: website/templates/base_dashboard_company.html:134
-#: website/templates/base_dashboard_user.html:116
+#: website/templates/base_dashboard.html:109
+#: website/templates/base_dashboard.html:134
+#: website/templates/base_dashboard.html:116
 #: website/templates/includes/navbar.html:125
 msgid "Change Password"
 msgstr "Changer le mot de passe"
@@ -251,16 +251,16 @@ msgstr "Inscription au compte"
 msgid "Sign Up"
 msgstr "S'inscrire"
 
-#: website/templates/base_admin.html:107
-#: website/templates/base_dashboard_company.html:132
-#: website/templates/base_dashboard_user.html:114
+#: website/templates/base_dashboard.html:107
+#: website/templates/base_dashboard.html:132
+#: website/templates/base_dashboard.html:114
 #: website/templates/includes/navbar.html:102
 msgid "User Profile"
 msgstr "Profil de l'utilisateur"
 
-#: website/templates/base_admin.html:111
-#: website/templates/base_dashboard_company.html:136
-#: website/templates/base_dashboard_user.html:118
+#: website/templates/base_dashboard.html:111
+#: website/templates/base_dashboard.html:136
+#: website/templates/base_dashboard.html:118
 #: website/templates/includes/navbar.html:36
 #: website/templates/includes/navbar.html:141
 msgid "Logout"
@@ -758,7 +758,7 @@ msgid "Submit the information"
 msgstr "Soumettre l'information"
 
 #: website/templates/mobile_about.html:34
-msgid "Win money through company-sponsored Bug Hunts"
+msgid "Win money through company-sponsored Bug Bounties"
 msgstr ""
 "Gagnez de l'argent grâce aux chasses aux bugs sponsorisées par l'entreprise"
 
@@ -779,7 +779,7 @@ msgid "If you participate in"
 msgstr "Si vous participez à"
 
 #: website/templates/mobile_about.html:36
-msgid "sponsored Bug Hunts"
+msgid "sponsored Bug Bounties"
 msgstr "chasses aux bugs sponsorisées"
 
 #: website/templates/mobile_about.html:36
@@ -804,7 +804,7 @@ msgstr ""
 
 #: website/templates/mobile_about.html:43
 msgid ""
-"offers monthly Bug Hunts through 4 different subscription plans to help you "
+"offers monthly Bug Bounties through 4 different subscription plans to help you "
 "achieve this"
 msgstr ""
 "offre des chasses aux bugs mensuelles via 4 plans d'abonnement différents "
