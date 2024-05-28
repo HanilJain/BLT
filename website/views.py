@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import random
@@ -66,6 +67,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 from django.views.generic import DetailView, ListView, TemplateView, View
 from django.views.generic.edit import CreateView
+from PIL import Image, ImageDraw, ImageFont
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.response import Response
@@ -75,6 +77,7 @@ from blt import settings
 from comments.models import Comment
 from website.models import (
     IP,
+    Bid,
     Company,
     CompanyAdmin,
     ContributorStats,
@@ -106,6 +109,8 @@ WHITELISTED_IMAGE_TYPES = {
     "jpg": "image/jpeg",
     "png": "image/png",
 }
+
+from PIL import Image
 
 
 def image_validator(img):
@@ -562,6 +567,10 @@ class UserDeleteView(LoginRequiredMixin, View):
 
 class IssueBaseCreate(object):
     def form_valid(self, form):
+        print(
+            "processing form_valid IssueBaseCreate for ip address: ",
+            get_client_ip(self.request),
+        )
         score = 3
         obj = form.save(commit=False)
         obj.user = self.request.user
@@ -592,8 +601,49 @@ class IssueBaseCreate(object):
         p = Points.objects.create(user=self.request.user, issue=obj, score=score)
 
     def process_issue(self, user, obj, created, domain, tokenauth=False, score=3):
+        print("processing process_issue for ip address: ", get_client_ip(self.request))
         p = Points.objects.create(user=user, issue=obj, score=score)
         messages.success(self.request, "Bug added ! +" + str(score))
+        # tweet feature
+        try:
+            auth = tweepy.Client(
+                settings.BEARER_TOKEN,
+                settings.APP_KEY,
+                settings.APP_KEY_SECRET,
+                settings.ACCESS_TOKEN,
+                settings.ACCESS_TOKEN_SECRET,
+            )
+
+            blt_url = "https://%s/issue2/%d" % (
+                settings.DOMAIN_NAME,
+                obj.id,
+            )
+            domain_name = domain.get_name
+            twitter_account = (
+                "@" + domain.get_or_set_x_url(domain_name) + " "
+                if domain.get_or_set_x_url(domain_name)
+                else ""
+            )
+
+            issue_title = obj.description + " " if not obj.is_hidden else ""
+
+            message = "%sAn Issue %shas been reported on %s by %s on %s.\n Have look here %s" % (
+                twitter_account,
+                issue_title,
+                domain_name,
+                user.username,
+                settings.PROJECT_NAME,
+                blt_url,
+            )
+
+            auth.create_tweet(text=message)
+
+        except (
+            TypeError,
+            tweepy.errors.HTTPException,
+            tweepy.errors.TweepyException,
+        ) as e:
+            print(e)
 
         if created:
             try:
@@ -620,33 +670,6 @@ class IssueBaseCreate(object):
                 [email_to],
                 html_message=msg_html,
             )
-            try:
-                auth = tweepy.Client(
-                    settings.BEARER_TOKEN,
-                    settings.APP_KEY,
-                    settings.APP_KEY_SECRET,
-                    settings.ACCESS_TOKEN,
-                    settings.ACCESS_TOKEN_SECRET,
-                )
-                if obj.is_hidden:
-                    pass
-                else:
-                    blt_url = "https://" + "%s/issue/%d" % (
-                        settings.DOMAIN_NAME,
-                        obj.id,
-                    )
-                    auth.create_tweet(
-                        text='An Issue "%s" has been reported on %s by %s on %s.\n Have look here %s'
-                        % (
-                            obj.description,
-                            domain,
-                            user,
-                            settings.PROJECT_NAME,
-                            blt_url,
-                        )
-                    )
-            except Exception as e:
-                print(e)
 
         else:
             email_to = domain.email
@@ -710,7 +733,6 @@ class IssueBaseCreate(object):
                 [email_to],
                 html_message=msg_html,
             )
-
         return HttpResponseRedirect("/")
 
 
@@ -730,6 +752,7 @@ class IssueCreate(IssueBaseCreate, CreateView):
     template_name = "report.html"
 
     def get_initial(self):
+        print("processing post for ip address: ", get_client_ip(self.request))
         try:
             json_data = json.loads(self.request.body)
             if not self.request.GET._mutable:
@@ -789,7 +812,18 @@ class IssueCreate(IssueBaseCreate, CreateView):
             initial["screenshot"] = "uploads\/" + self.request.POST.get("screenshot-hash") + ".png"
         return initial
 
+    # def get(self, request, *args, **kwargs):
+    #     print("processing get for ip address: ", get_client_ip(request))
+
+    #     captcha_form = CaptchaForm()
+    #     return render(
+    #         request,
+    #         self.template_name,
+    #         {"form": self.get_form(), "captcha_form": captcha_form},
+    #     )
+
     def post(self, request, *args, **kwargs):
+        print("processing post for ip address: ", get_client_ip(request))
         # resolve domain
         url = request.POST.get("url").replace("www.", "").replace("https://", "")
 
@@ -822,6 +856,7 @@ class IssueCreate(IssueBaseCreate, CreateView):
                     else:
                         raise Exception
             except:
+                # TODO: it could be that the site is down so we can consider logging this differently
                 messages.error(request, "Domain does not exist")
 
                 captcha_form = CaptchaForm(request.POST)
@@ -830,11 +865,34 @@ class IssueCreate(IssueBaseCreate, CreateView):
                     "report.html",
                     {"form": self.get_form(), "captcha_form": captcha_form},
                 )
-        if not request.FILES.get("screenshots"):
+        # if not request.FILES.get("screenshots"):
+        #     messages.error(request, "Screenshot is required")
+        #     captcha_form = CaptchaForm(request.POST)
+        #     return render(
+        #         self.request,
+        #         "report.html",
+        #         {"form": self.get_form(), "captcha_form": captcha_form},
+        #     )
+
+        screenshot = request.FILES.get("screenshots")
+        if not screenshot:
             messages.error(request, "Screenshot is required")
             captcha_form = CaptchaForm(request.POST)
             return render(
-                self.request,
+                request,
+                "report.html",
+                {"form": self.get_form(), "captcha_form": captcha_form},
+            )
+
+        try:
+            # Attempt to open the image to validate if it's a correct format
+            img = Image.open(screenshot)
+            img.verify()  # Verify that it is, in fact, an image
+        except (IOError, ValueError):
+            messages.error(request, "Invalid image file.")
+            captcha_form = CaptchaForm(request.POST)
+            return render(
+                request,
                 "report.html",
                 {"form": self.get_form(), "captcha_form": captcha_form},
             )
@@ -842,6 +900,10 @@ class IssueCreate(IssueBaseCreate, CreateView):
         return super().post(request, *args, **kwargs)
 
     def form_valid(self, form):
+        print(
+            "processing form_valid in IssueCreate for ip address: ",
+            get_client_ip(self.request),
+        )
         reporter_ip = get_client_ip(self.request)
         form.instance.reporter_ip_address = reporter_ip
 
@@ -878,7 +940,6 @@ class IssueCreate(IssueBaseCreate, CreateView):
                     "report.html",
                     {"form": self.get_form(), "captcha_form": captcha_form},
                 )
-
             clean_domain = (
                 obj.domain_name.replace("www.", "").replace("https://", "").replace("http://", "")
             )
@@ -1060,6 +1121,12 @@ class IssueCreate(IssueBaseCreate, CreateView):
         return create_issue(self, form)
 
     def get_context_data(self, **kwargs):
+        # if self.request is a get, clear out the form data
+        if self.request.method == "GET":
+            self.request.POST = {}
+            self.request.GET = {}
+
+        print("processing get_context_data for ip address: ", get_client_ip(self.request))
         context = super(IssueCreate, self).get_context_data(**kwargs)
         context["activities"] = Issue.objects.exclude(
             Q(is_hidden=True) & ~Q(user_id=self.request.user.id)
@@ -1363,8 +1430,8 @@ class DomainDetailView(ListView):
         context = super(DomainDetailView, self).get_context_data(*args, **kwargs)
         # remove any arguments from the slug
         self.kwargs["slug"] = self.kwargs["slug"].split("?")[0]
-
-        context["domain"] = get_object_or_404(Domain, name=self.kwargs["slug"])
+        domain = get_object_or_404(Domain, name=self.kwargs["slug"])
+        context["domain"] = domain
 
         parsed_url = urlparse("http://" + self.kwargs["slug"])
 
@@ -1428,6 +1495,8 @@ class DomainDetailView(ListView):
             .annotate(c=Count("label"))
             .order_by()
         )
+        context["twitter_url"] = "https://twitter.com/%s" % domain.get_or_set_x_url(domain.get_name)
+
         return context
 
 
@@ -1736,21 +1805,23 @@ class ScoreboardView(ListView):
     paginate_by = 20
 
     def get_context_data(self, *args, **kwargs):
-        context = super(ScoreboardView, self).get_context_data(*args, **kwargs)
-        companies = sorted(Domain.objects.all(), key=lambda t: t.open_issues.count(), reverse=True)
+        context = super().get_context_data(*args, **kwargs)
 
-        # companies = Domain.objects.all().order_by("-open_issues")
-        paginator = Paginator(companies, self.paginate_by)
+        # Annotate each domain with the count of open issues
+        annotated_domains = Domain.objects.annotate(
+            open_issues_count=Count("issue", filter=Q(issue__status="open"))
+        ).order_by("-open_issues_count")
+
+        paginator = Paginator(annotated_domains, self.paginate_by)
         page = self.request.GET.get("page")
 
-        if self.request.user.is_authenticated:
-            context["wallet"] = Wallet.objects.get(user=self.request.user)
         try:
             scoreboard_paginated = paginator.page(page)
         except PageNotAnInteger:
             scoreboard_paginated = paginator.page(1)
         except EmptyPage:
             scoreboard_paginated = paginator.page(paginator.num_pages)
+
         context["scoreboard"] = scoreboard_paginated
         context["user"] = self.request.GET.get("user")
         return context
@@ -3582,7 +3653,25 @@ def contributors_view(request, *args, **kwargs):
 
 
 def sponsor_view(request):
-    return render(request, "sponsor.html")
+    from bitcash.network import NetworkAPI
+
+    def get_bch_balance(address):
+        try:
+            balance_satoshis = NetworkAPI.get_balance(address)
+            balance_bch = balance_satoshis / 100000000  # Convert from satoshis to BCH
+            return balance_bch
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    # Example BCH address
+    bch_address = "bitcoincash:qr5yccf7j4dpjekyz3vpawgaarl352n7yv5d5mtzzc"
+
+    balance = get_bch_balance(bch_address)
+    if balance is not None:
+        print(f"Balance of {bch_address}: {balance} BCH")
+
+    return render(request, "sponsor.html", context={"balance": balance})
 
 
 def safe_redirect(request: HttpRequest):
@@ -4005,13 +4094,13 @@ class IssueView3(DetailView):
             .values("id", "description", "markdown_description", "screenshots__image")
             .order_by("views")[:4]
         )
-        context["subscribed_to_domain"] = False
-
-        # TODO fix this
-        # if isinstance(self.request.user, User):
-        #     context["subscribed_to_domain"] = self.object.domain.user_subscribed_domains.filter(
-        #         pk=self.request.user.userprofile.id
-        #     ).exists()
+        # TODO fix this, edit: Hopefully this will work
+        if isinstance(self.request.user, User):
+            context["subscribed_to_domain"] = self.object.domain.user_subscribed_domains.filter(
+                pk=self.request.user.userprofile.id
+            ).exists()
+        else:
+            context["subscribed_to_domain"] = False
 
         if isinstance(self.request.user, User):
             context["bookmarked"] = self.request.user.userprofile.issue_saved.filter(
@@ -4313,3 +4402,116 @@ def deletions(request):
         "monitor.html",
         {"form": form, "deletions": Monitor.objects.filter(user=request.user)},
     )
+
+
+def generate_bid_image(request, bid_amount):
+    image = Image.new("RGB", (300, 100), color="white")
+    draw = ImageDraw.Draw(image)
+
+    font = ImageFont.load_default()
+    draw.text((10, 10), f"Bid Amount: ${bid_amount}", fill="black", font=font)
+    byte_io = io.BytesIO()
+    image.save(byte_io, format="PNG")
+    byte_io.seek(0)
+
+    return HttpResponse(byte_io, content_type="image/png")
+
+
+def change_bid_status(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            bid_id = data.get("id")
+            bid = Bid.objects.get(id=bid_id)
+            bid.status = "Selected"
+            bid.save()
+            return JsonResponse({"success": True})
+        except Bid.DoesNotExist:
+            return JsonResponse({"success": False, "error": "Bid not found"})
+    return HttpResponse(status=405)
+
+
+def get_unique_issues(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            issue_url = data.get("issue_url")
+            if not issue_url:
+                return JsonResponse({"success": False, "error": "issue_url not provided"})
+
+            all_bids = Bid.objects.filter(issue_url=issue_url).values()
+            return JsonResponse(list(all_bids), safe=False)
+        except json.JSONDecodeError:
+            return JsonResponse({"success": False, "error": "Invalid JSON"})
+    return HttpResponse(status=405)
+
+
+def select_bid(request):
+    return render(request, "bid_selection.html")
+
+
+@login_required
+def SaveBiddingData(request):
+    if request.method == "POST":
+        user = request.user.username
+        url = request.POST.get("issue_url")
+        amount = request.POST.get("bid_amount")
+        current_time = datetime.now(timezone.utc)
+        bid = Bid(
+            user=user,
+            issue_url=url,
+            amount=amount,
+            created=current_time,
+            modified=current_time,
+        )
+        bid.save()
+        bid_link = f"https://blt.owasp.org/generate_bid_image/{amount}/"
+        return JsonResponse({"Paste this in GitHub Issue Comments:": bid_link})
+
+    return render(request, "bidding.html")
+
+
+def fetch_current_bid(request):
+    if request.method == "POST":
+        unique_issue_links = Bid.objects.values_list("issue_url", flat=True).distinct()
+        data = json.loads(request.body)
+        issue_url = data.get("issue_url")
+        bid = Bid.objects.filter(issue_url=issue_url).order_by("-created").first()
+        if bid is not None:
+            return JsonResponse(
+                {
+                    "issueLinks": list(unique_issue_links),
+                    "current_bid": bid.amount,
+                    "status": bid.status,
+                }
+            )
+        else:
+            return JsonResponse({"error": "Bid not found"}, status=404)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@login_required
+def submit_pr(request):
+    if request.method == "POST":
+        user = request.user.username
+        pr_link = request.POST.get("pr_link")
+        amount = request.POST.get("bid_amount")
+        issue_url = request.POST.get("issue_link")
+        status = "Submitted"
+        current_time = datetime.now(timezone.utc)
+        bch_address = request.POST.get("bch_address")
+        bid = Bid(
+            user=user,
+            pr_link=pr_link,
+            amount=amount,
+            issue_url=issue_url,
+            status=status,
+            created=current_time,
+            modified=current_time,
+            bch_address=bch_address,
+        )
+        bid.save()
+        return render(request, "submit_pr.html")
+
+    return render(request, "submit_pr.html")

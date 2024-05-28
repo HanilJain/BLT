@@ -5,6 +5,7 @@ from import_export import resources
 from import_export.admin import ImportExportModelAdmin
 
 from website.models import (
+    Bid,
     Company,
     CompanyAdmin,
     ContributorStats,
@@ -73,6 +74,19 @@ class WinnerAdmin(admin.ModelAdmin):
     )
 
 
+class BidAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "issue_url",
+        "pr_link",
+        "amount",
+        "bch_address",
+        "status",
+        "created",
+        "modified",
+    )
+
+
 class WalletAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "current_balance", "created_at")
 
@@ -133,6 +147,7 @@ class DomainAdminPanel(ImportExportModelAdmin):
         "created",
         "modified",
     )
+    search_fields = ["name", "company__name", "url"]
 
 
 class CompanyUserAdmin(ImportExportModelAdmin):
@@ -223,6 +238,7 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 admin.site.register(ContributorStats)
 
+admin.site.register(Bid, BidAdmin)
 admin.site.register(UserProfile, UserProfileAdmin)
 admin.site.register(User, UserAdmin)
 
