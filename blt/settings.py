@@ -202,11 +202,11 @@ WSGI_APPLICATION = "blt.wsgi.application"
 ASGI_APPLICATION = "blt.asgi.application"
 
 CHANNEL_LAYER = {
-    "default" : {
+    "default": {
         "BACKEND": "channels_redis.core.RedisChaneelLayer",
-        "CONFIG":{
-            "hosts": [("localhost", 8000)],
-        }
+        "CONFIG": {
+            "hosts": [("cache", 8000)],
+        },
     }
 }
 # Database
