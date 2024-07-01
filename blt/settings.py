@@ -208,7 +208,7 @@ CHANNEL_LAYERS = {
             "hosts": [("cache", 6379)],
         },
     },
-
+}
 
 # Database
 # https://docs.djangoproject.com/en/1.9/ref/settings/#databases
